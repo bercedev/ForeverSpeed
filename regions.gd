@@ -14,11 +14,14 @@ enum { FOREST, CITY, BRIDGE, COAST }
 const NAMES := ["ORMAN YOLU", "ŞEHİR", "KÖPRÜ", "SAHİL YOLU"]
 const LEN := 1600.0 # bölge uzunluğu (m)
 const GAP := 40.0 # parça uzunluğu (m)
+const WIDEN := 3.5 # 3. şerit genişliği: sağ taraf bu kadar dışa kayar
 
 static var _m := {}
-static var _cone: CylinderMesh
-static var _posts: MultiMesh
-static var _refls: MultiMesh
+static var _pine: ArrayMesh # gövde + üç katlı çam
+static var _broad: ArrayMesh # gövde + yuvarlak taç
+static var _signs: Array[Material] = [] # şehir neon tabelaları
+# sol ve sağ bariyer dizileri; sağdakinin 3. şerit için açılan (in) ve kapanan (out) eğik hâlleri de var
+static var _side := {}
 static var _harbor: MultiMesh
 
 
@@ -35,29 +38,48 @@ static func _setup() -> void:
 		"red": Build.mat(Color(1.0, 0.05, 0.05), 0.5, 0.0, 8.0),
 		"refl": Build.mat(Color(1.0, 0.7, 0.35), 0.5, 0.0, 3.0),
 		"harbor": Build.mat(Color(1.0, 0.8, 0.5), 0.5, 0.0, 5.0),
+		"rail": Build.mat(Color(0.35, 0.37, 0.4), 0.3, 0.7),
 	}
 	for k in ["water", "building"]:
 		var sm := ShaderMaterial.new()
 		sm.shader = load("res://%s.gdshader" % k)
 		_m[k] = sm
-	_cone = CylinderMesh.new()
-	_cone.top_radius = 0.0
-	_cone.bottom_radius = 1.8
-	_cone.height = 7.0
+	# ağaçlar: iki yüzeyli tek mesh (gövde, yaprak); parça başına bir MultiMesh, örnek rengiyle ton farkı
+	var trunk := Build.mat(Color(0.05, 0.035, 0.025), 0.9)
+	var leaf := Build.mat(Color(1, 1, 1), 0.9)
+	leaf.vertex_color_use_as_albedo = true
+	var cyl := CylinderMesh.new()
+	cyl.top_radius = 0.18
+	cyl.bottom_radius = 0.3
+	cyl.height = 3.0
+	cyl.radial_segments = 6
+	cyl.rings = 1
+	_pine = _tree_mesh(cyl, [[2.4, 4.4, 4.0], [1.9, 3.8, 6.0], [1.3, 3.0, 7.8]], false, trunk, leaf)
+	_broad = _tree_mesh(cyl, [[2.3, 3.4, 4.6], [1.6, 2.6, 5.8]], true, trunk, leaf)
+	for c in [Color(1.0, 0.2, 0.7), Color(0.3, 0.9, 1.0), Color(1.0, 0.55, 0.15), Color(0.6, 0.4, 1.0)]:
+		_signs.append(Build.mat(c, 0.5, 0.0, 5.0))
 	# Bariyer direkleri ve reflektörleri 4 m'de bir: hız hissini en çok bunlar verir.
 	var post := BoxMesh.new()
 	post.size = Vector3(0.12, 0.8, 0.12)
 	var refl := BoxMesh.new()
 	refl.size = Vector3(0.05, 0.1, 0.12)
-	var pp := []
-	var rp := []
-	for k in int(GAP / 4.0):
-		for s in [-1.0, 1.0]:
+	# kayma: parça içinde z'ye göre ek x (0: düz, in: yakında 0 uzakta 3,5, out: tersi)
+	var shifts := {
+		"l": func(_z): return 0.0,
+		"r": func(_z): return 0.0,
+		"in": func(z): return WIDEN * (GAP * 0.5 - z) / GAP,
+		"out": func(z): return WIDEN * (z + GAP * 0.5) / GAP,
+	}
+	for key in shifts:
+		var s := -1.0 if key == "l" else 1.0
+		var pp := []
+		var rp := []
+		for k in int(GAP / 4.0):
 			var z := -GAP * 0.5 + 2.0 + k * 4.0
-			pp.append(Vector3(s * 7.95, 0.4, z))
-			rp.append(Vector3(s * 7.72, 0.65, z))
-	_posts = Build.multimesh(post, pp)
-	_refls = Build.multimesh(refl, rp)
+			var dx: float = shifts[key].call(z)
+			pp.append(Vector3(s * 7.95 + dx, 0.4, z))
+			rp.append(Vector3(s * 7.72 + dx, 0.65, z))
+		_side[key] = [Build.multimesh(post, pp), Build.multimesh(refl, rp)]
 	var bulb := BoxMesh.new()
 	bulb.size = Vector3(0.4, 0.4, 0.4)
 	var hp := []
@@ -82,6 +104,7 @@ static func make_chunk(i: int) -> Node3D:
 	var head := Build.mat(col, 0.5, 0.0, 8.0)
 	Build.box(lamp, Vector3(0.9, 0.18, 0.45), Vector3(s * 6.3, 7.9, 0), head)
 	p.set_meta("lamp_mat", head) # gece-gündüz için
+	p.set_meta("lamp_right", s > 0.0)
 	# Mobile renderer'da mesh başına en çok 8 omni ışık: tek parça yol 9 lambanın hepsini alamaz.
 	# Yalnız 0,1,4,5,8. parçalar gerçek ışık verir (iki yana dağılır); ötekiler parlayan başlık ve yansımayla kalır.
 	if i % 4 < 2:
@@ -93,11 +116,23 @@ static func make_chunk(i: int) -> Node3D:
 		lamp.add_child(light)
 		p.set_meta("lamp_light", light)
 	Build.streak(lamp, Vector3(s * 6.2, 0, 0), col, 1.4, 14.0, 1.2)
-	for pair in [[_posts, _m.pole], [_refls, _m.refl]]:
-		var mmi := MultiMeshInstance3D.new()
-		mmi.multimesh = pair[0]
-		mmi.material_override = pair[1]
-		p.add_child(mmi)
+	# bariyer: direkler, reflektörler ve korkuluk. Sağ taraf ayrı düğümde, 3. şerit açılınca dışa kayar.
+	var rside := Node3D.new()
+	rside.name = "rside"
+	p.add_child(rside)
+	for side in ["l", "r"]:
+		var holder: Node3D = p if side == "l" else rside
+		var mms: Array = []
+		for k in 2:
+			var mmi := MultiMeshInstance3D.new()
+			mmi.multimesh = _side[side][k]
+			mmi.material_override = _m.pole if k == 0 else _m.refl
+			holder.add_child(mmi)
+			mms.append(mmi)
+		var rail := Build.box(holder, Vector3(0.12, 0.3, GAP), Vector3((-7.8 if side == "l" else 7.8), 0.65, 0), _m.rail)
+		if side == "r":
+			p.set_meta("rside_mm", mms)
+			p.set_meta("rail_r", rail)
 
 	for r in 4:
 		var g := Node3D.new()
@@ -114,6 +149,28 @@ static func make_chunk(i: int) -> Node3D:
 	return p
 
 
+# 3. şerit: 0 normal, 1 geniş, 2 bu parçada açılıyor, 3 bu parçada kapanıyor. Sağdaki direk, reflektör,
+# korkuluk ve lamba yolla birlikte dışa kayar.
+static func set_widen(p: Node3D, mode: int) -> void:
+	var rside: Node3D = p.get_node("rside")
+	var key: String = ["r", "r", "in", "out"][mode]
+	var mms: Array = p.get_meta("rside_mm")
+	for k in 2:
+		(mms[k] as MultiMeshInstance3D).multimesh = _side[key][k]
+	rside.position.x = WIDEN if mode == 1 else 0.0
+	var rail: MeshInstance3D = p.get_meta("rail_r")
+	var ang := atan2(WIDEN, GAP)
+	rail.position.x = 7.8 + (WIDEN * 0.5 if mode >= 2 else 0.0)
+	rail.rotation.y = -ang if mode == 2 else (ang if mode == 3 else 0.0)
+	rail.scale.z = 1.0 / cos(ang) if mode >= 2 else 1.0
+	if p.get_meta("lamp_right"):
+		(p.get_meta("lamp") as Node3D).position.x = [0.0, WIDEN, WIDEN * 0.5, WIDEN * 0.5][mode]
+	var wall: MeshInstance3D = p.get_node("r%d" % COAST).get_meta("wall")
+	wall.position.x = 8.7 + [0.0, WIDEN, WIDEN * 0.5, WIDEN * 0.5][mode]
+	wall.rotation.y = rail.rotation.y
+	wall.scale.z = rail.scale.z
+
+
 static func configure(p: Node3D, r: int) -> void:
 	p.set_meta("region", r)
 	p.set_meta("deco", p.get_node("r%d/deco" % r)) # her karede yol aramasın
@@ -121,34 +178,101 @@ static func configure(p: Node3D, r: int) -> void:
 		p.get_node("r%d" % k).visible = k == r
 
 
+# Gövde ve yaprak katmanlarından iki yüzeyli ağaç. layers: [taban yarıçapı, boy, merkez yüksekliği].
+static func _tree_mesh(trunk_mesh: Mesh, layers: Array, round: bool, trunk: Material, leaf: Material) -> ArrayMesh:
+	var mesh := ArrayMesh.new()
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	st.append_from(trunk_mesh, 0, Transform3D(Basis(), Vector3(0, 1.5, 0)))
+	st.commit(mesh)
+	st = SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for l in layers:
+		var part: PrimitiveMesh
+		if round:
+			var sp := SphereMesh.new()
+			sp.radius = l[0]
+			sp.height = l[1]
+			sp.radial_segments = 10
+			sp.rings = 5
+			part = sp
+		else:
+			var cn := CylinderMesh.new()
+			cn.top_radius = 0.0
+			cn.bottom_radius = l[0]
+			cn.height = l[1]
+			cn.radial_segments = 8
+			cn.rings = 1
+			part = cn
+		st.append_from(part, 0, Transform3D(Basis(), Vector3(0, l[2], 0)))
+	st.commit(mesh)
+	mesh.surface_set_material(0, trunk)
+	mesh.surface_set_material(1, leaf)
+	return mesh
+
+
+# Orman: iki sıra ağaç, çoğu çam. Sağda ilk sıra 14,5 m'den başlar: 3. şerit açılınca yola taşmasın.
 static func _forest(g: Node3D, deco: Node3D) -> void:
 	for s in [-1.0, 1.0]:
-		Build.plane(g, Vector2(140, GAP), Vector3(s * 78.0, -0.05, 0), _m.grass)
-	for k in 4:
-		var t := MeshInstance3D.new()
-		t.mesh = _cone
-		t.material_override = _m.leaf
-		var sc := randf_range(0.7, 1.4)
-		var side := -1.0 if k < 2 else 1.0
-		t.scale = Vector3.ONE * sc
-		t.position = Vector3(side * randf_range(11.0, 22.0), 3.5 * sc, randf_range(-GAP * 0.5, GAP * 0.5))
-		deco.add_child(t)
+		Build.plane(g, Vector2(140, GAP), Vector3(s * 78.0, -0.05, 0), _m.grass).layers = 2
+	for kind in [_pine, _broad]:
+		var mm := MultiMesh.new()
+		mm.transform_format = MultiMesh.TRANSFORM_3D
+		mm.use_colors = true
+		mm.mesh = kind
+		var n := 10 if kind == _pine else 4
+		mm.instance_count = n
+		for k in n:
+			var side := -1.0 if k % 2 == 0 else 1.0
+			var near := 11.0 if side < 0.0 else 14.5
+			var x := side * (randf_range(near, near + 7.0) if k < n / 2 else randf_range(near + 8.0, near + 24.0))
+			var sc := randf_range(0.8, 1.5)
+			var t := Transform3D(Basis(Vector3.UP, randf() * TAU).scaled(Vector3.ONE * sc), Vector3(x, 0, randf_range(-GAP * 0.5, GAP * 0.5)))
+			mm.set_instance_transform(k, t)
+			mm.set_instance_color(k, Color(0.012, 0.03, 0.016).lerp(Color(0.03, 0.045, 0.02), randf()))
+		var mmi := MultiMeshInstance3D.new()
+		mmi.multimesh = mm
+		deco.add_child(mmi)
 
 
+# Şehir: binaların bir kısmında çatı katı ve kırmızı ışıklı anten, yola bakan cephede neon tabela.
 static func _city(g: Node3D, deco: Node3D) -> void:
 	for s in [-1.0, 1.0]:
-		Build.plane(g, Vector2(140, GAP), Vector3(s * 78.0, -0.05, 0), _m.concrete)
+		Build.plane(g, Vector2(140, GAP), Vector3(s * 78.0, -0.05, 0), _m.concrete).layers = 2
 		for z in [-10.0, 10.0]:
 			var w := randf_range(8.0, 16.0)
 			var h := randf_range(12.0, 55.0)
-			var b := Build.box(deco, Vector3(w, h, randf_range(10.0, 18.0)), Vector3(s * (13.0 + w * 0.5 + randf() * 6.0), h * 0.5, z), _m.building)
+			var d := randf_range(10.0, 18.0)
+			var face: float = s * (13.0 + randf() * 6.0) # yola bakan cephe
+			var cx: float = face + s * w * 0.5
+			var b := Build.box(deco, Vector3(w, h, d), Vector3(cx, h * 0.5, z), _m.building)
 			b.set_instance_shader_parameter("seed", randf() * 100.0)
+			b.set_instance_shader_parameter("h", h)
+			if randf() < 0.5:
+				var rh := randf_range(2.5, 6.0)
+				var r := Build.box(deco, Vector3(w * 0.6, rh, d * 0.6), Vector3(cx, h + rh * 0.5, z), _m.building)
+				r.set_instance_shader_parameter("seed", randf() * 100.0)
+				r.set_instance_shader_parameter("h", rh)
+				h += rh
+			if randf() < 0.35:
+				Build.box(deco, Vector3(0.2, 6.0, 0.2), Vector3(cx, h + 3.0, z), _m.pole)
+				Build.box(deco, Vector3(0.35, 0.35, 0.35), Vector3(cx, h + 6.1, z), _m.red)
+			if randf() < 0.45:
+				Build.box(deco, Vector3(0.15, randf_range(1.2, 2.2), randf_range(4.0, 7.0)),
+					Vector3(face - s * 0.1, randf_range(6.0, 14.0), z + randf_range(-2.0, 2.0)), _signs.pick_random())
 
 
 # Eğik askılı köprü: güverte, aşağıda su, iki parçada bir kule ve halatlar.
 static func _bridge(g: Node3D, deco: Node3D, i: int) -> void:
-	Build.box(g, Vector3(17.8, 1.6, GAP), Vector3(0, -0.85, 0), _m.deck)
+	Build.box(g, Vector3(17.8, 1.6, GAP), Vector3(0, -0.85, 0), _m.deck).layers = 2 # yansımayı kapatmasın
 	Build.plane(g, Vector2(400, GAP), Vector3(0, -14.0, 0), _m.water)
+	for s in [-1.0, 1.0]: # iki yanda uzak kıyı ışıkları: denizin yeri belli olsun
+		var mmi := MultiMeshInstance3D.new()
+		mmi.multimesh = _harbor
+		mmi.material_override = _m.harbor
+		mmi.position.x = s * 60.0
+		mmi.scale.x = s
+		deco.add_child(mmi)
 	if i % 2 != 0:
 		return
 	for s in [-1.0, 1.0]:
@@ -161,8 +285,10 @@ static func _bridge(g: Node3D, deco: Node3D, i: int) -> void:
 
 # Solda kayalık, sağda deniz ve uzakta liman ışıkları.
 static func _coast(g: Node3D, deco: Node3D) -> void:
-	Build.plane(g, Vector2(140, GAP), Vector3(-78.0, -0.05, 0), _m.rock)
-	Build.box(g, Vector3(1.0, 1.6, GAP), Vector3(8.7, -0.8, 0), _m.concrete) # yol ile deniz arasındaki duvar
+	Build.plane(g, Vector2(140, GAP), Vector3(-78.0, -0.05, 0), _m.rock).layers = 2
+	var wall := Build.box(g, Vector3(1.0, 1.6, GAP), Vector3(8.7, -0.8, 0), _m.concrete) # yol ile deniz arasındaki duvar
+	wall.layers = 2
+	g.set_meta("wall", wall)
 	Build.plane(g, Vector2(300, GAP), Vector3(159.2, -1.2, 0), _m.water)
 	for k in 3:
 		var r := Build.box(deco, Vector3(randf_range(6.0, 14.0), randf_range(5.0, 16.0), randf_range(6.0, 12.0)),

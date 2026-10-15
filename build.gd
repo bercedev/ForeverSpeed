@@ -56,7 +56,8 @@ static func streak(parent: Node3D, at: Vector3, color: Color, width: float, leng
 	m.shader = streak_shader
 	m.set_shader_parameter("color", color)
 	m.set_shader_parameter("energy", energy)
-	plane(parent, Vector2(width, length), Vector3(at.x, 0.05, at.z + length * 0.5), m)
+	var mi := plane(parent, Vector2(width, length), Vector3(at.x, 0.05, at.z + length * 0.5), m)
+	mi.layers = 2 # yansıma kamerası yalnız 1. katmanı çizer: sahte yansıma iki kez görünmesin
 
 
 static func multimesh(mesh: Mesh, points: Array) -> MultiMesh:

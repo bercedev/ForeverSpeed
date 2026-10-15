@@ -9,14 +9,30 @@ extends Node
 
 const PATH := "user://save.cfg"
 # İsimlerde marka yok: mağazada sorun çıkarmasın.
+# top: tavan hıza eklenen km/sa, accel: ivme çarpanı
 const CARS := [
-	{"id": "r34", "name": "MIDNIGHT GT", "price": 0},
-	{"id": "sedan-sports", "name": "STREET SEDAN", "price": 1500},
-	{"id": "hatchback-sports", "name": "HOT HATCH", "price": 2500},
-	{"id": "race", "name": "RACER", "price": 5000},
-	{"id": "race-future", "name": "FUTURE", "price": 9000},
+	{"id": "r34", "name": "MIDNIGHT GT", "price": 0, "top": 0.0, "accel": 0.85},
+	{"id": "taxi", "name": "NIGHT CAB", "price": 1200, "top": 0.0, "accel": 0.85},
+	{"id": "sedan-sports", "name": "STREET SEDAN", "price": 1500, "top": 5.0, "accel": 0.9},
+	{"id": "hatchback-sports", "name": "HOT HATCH", "price": 2500, "top": 5.0, "accel": 1.0},
+	{"id": "suv-luxury", "name": "BLACK SUV", "price": 3500, "top": 10.0, "accel": 1.0},
+	{"id": "race", "name": "RACER", "price": 5000, "top": 18.0, "accel": 1.15},
+	{"id": "police", "name": "INTERCEPTOR", "price": 6500, "top": 24.0, "accel": 1.2},
+	{"id": "race-future", "name": "FUTURE", "price": 9000, "top": 32.0, "accel": 1.3},
 ]
-# [ad, renk, fiyat]; 0 = modelin kendi rengi
+# Araç başına geliştirme: [ad, ilk seviye fiyatı]. Fiyat seviyeyle artar, en çok MAX_LEVEL.
+const UPGRADES := {
+	"speed": ["HIZ", 400],
+	"accel": ["İVME", 350],
+	"brake": ["FREN", 250],
+	"nitro": ["NİTRO", 450],
+}
+const MAX_LEVEL := 5
+const MODES := ["normal", "time", "race", "free"]
+const MODE_NAMES := ["NORMAL", "ZAMANA KARŞI", "YARIŞ", "SERBEST"]
+const CAMS := ["TAKİP", "UZAK", "KAPUT", "KOKPİT"]
+const STATIONS := ["KAPALI", "SYNTH FM", "LO-FI FM"]
+# [ad, renk, fiyat, kaplama, ikinci renk]; 0 = modelin kendi rengi. Kaplama car.gdshader'daki finish.
 const PAINTS := [
 	["ORİJİNAL", Color(1, 1, 1), 0],
 	["GECE MAVİSİ", Color(0.08, 0.15, 0.75), 300],
@@ -27,12 +43,33 @@ const PAINTS := [
 	["YEŞİL", Color(0.1, 0.6, 0.25), 400],
 	["TURUNCU", Color(0.95, 0.45, 0.05), 500],
 	["GÜMÜŞ", Color(0.55, 0.57, 0.6), 500],
+	["METALİK GRİ", Color(0.35, 0.37, 0.41), 800, 1],
+	["METALİK MAVİ", Color(0.1, 0.3, 0.85), 900, 1],
+	["MAT SİYAH", Color(0.05, 0.05, 0.055), 900, 2],
+	["MAT HAKİ", Color(0.25, 0.3, 0.17), 900, 2],
+	["ŞEKER KIRMIZI", Color(0.75, 0.02, 0.06), 1300, 6],
+	["NEON PEMBE", Color(1.0, 0.15, 0.65), 1600, 5],
+	["BUKALEMUN", Color(0.5, 0.1, 0.85), 1900, 4, Color(0.0, 0.9, 0.75)],
+	["KROM", Color(0.85, 0.87, 0.9), 2400, 3],
+	["YARIŞ ŞERİDİ", Color(0.08, 0.2, 0.75), 1100, 7, Color(0.95, 0.95, 0.97)],
+	["ALEV", Color(0.04, 0.04, 0.05), 1700, 8],
+	["KAMUFLAJ", Color(0.22, 0.27, 0.15), 1200, 9, Color(0.42, 0.36, 0.22)],
+	["DAMA", Color(0.92, 0.92, 0.94), 1300, 10, Color(0.04, 0.04, 0.05)],
+	["GRAFİTİ", Color(0.12, 0.1, 0.16), 2200, 11],
+	["KARBON", Color(0.06, 0.06, 0.07), 1500, 12],
+	["KAPLAN", Color(0.95, 0.5, 0.05), 1800, 13, Color(0.03, 0.03, 0.03)],
+	["NEON DEVRE", Color(0.03, 0.03, 0.04), 2600, 14, Color(0.1, 0.95, 1.0)],
 ]
+# Araç başına aksesuar: [ad, fiyat]. Durum 0 yok, 1 var ama kapalı, 2 açık.
+const EXTRAS := {
+	"fog": ["SİS FARI", 600],
+	"amber": ["AMERİKAN PARK", 400],
+}
 # tür: [metin, hedefler, ödül coin]
 const MISSIONS := {
 	"near": ["%d yakın geçiş yap", [15, 25, 40], 150],
 	"near_tunnel": ["Tünelde %d yakın geçiş", [3, 5, 8], 200],
-	"fast_km": ["280+ km/sa ile %d km git", [1, 2, 3], 200],
+	"fast_km": ["220+ km/sa ile %d km git", [1, 2, 3], 200],
 	"run_km": ["Tek oyunda %d km git", [3, 5, 8], 250],
 	"nitro": ["%d kez nitro kullan", [2, 4, 6], 150],
 	"combo": ["x%d kombo yap", [4, 6, 8], 200],
@@ -52,6 +89,11 @@ var sound := true
 var quality := 1 # 0 düşük, 1 orta, 2 yüksek
 var fps := 60 # kare hızı sınırı: zayıf telefonda 30, iyisinde 90-120
 var nitro_tip := false # nitro öğreticisi bir kez gösterilir
+var upgrades := {} # araç id -> {speed, accel, brake, nitro: seviye}
+var extras := {} # araç id -> {fog, amber: 0 yok, 1 kapalı, 2 açık}
+var mode := "normal"
+var cam := 0
+var radio := 1
 var autostart := false # kaydedilmez: "TEKRAR" sahneyi yenileyince menüyü atlar
 var clock := 0.0 # kaydedilmez: gece-gündüz saati, sahne yenilense de akar; açılış hep gece
 var day := ""
@@ -72,6 +114,11 @@ func _ready() -> void:
 		quality = cfg.get_value("p", "quality", 1)
 		fps = cfg.get_value("p", "fps", 60)
 		nitro_tip = cfg.get_value("p", "nitro_tip", false)
+		upgrades = cfg.get_value("p", "upgrades", {})
+		extras = cfg.get_value("p", "extras", {})
+		mode = cfg.get_value("p", "mode", "normal")
+		cam = cfg.get_value("p", "cam", 0)
+		radio = cfg.get_value("p", "radio", 1)
 		day = cfg.get_value("m", "day", "")
 		missions = cfg.get_value("m", "list", [])
 	refresh_missions()
@@ -79,7 +126,7 @@ func _ready() -> void:
 
 func save() -> void:
 	var cfg := ConfigFile.new()
-	for k in ["coins", "best", "cars", "paints", "car", "paint", "vibration", "sound", "quality", "fps", "nitro_tip"]:
+	for k in ["coins", "best", "cars", "paints", "car", "paint", "vibration", "sound", "quality", "fps", "nitro_tip", "upgrades", "extras", "mode", "cam", "radio"]:
 		cfg.set_value("p", k, get(k))
 	cfg.set_value("m", "day", day)
 	cfg.set_value("m", "list", missions)
@@ -161,6 +208,44 @@ func buy_paint(i: int) -> bool:
 		return false
 	coins -= price
 	paints.append(i)
+	save()
+	return true
+
+
+func extra(id: String, key: String) -> int:
+	return extras.get(id, {}).get(key, 0)
+
+
+# Yoksa satın alır (açık gelir), varsa açar/kapatır.
+func use_extra(id: String, key: String) -> bool:
+	var st := extra(id, key)
+	if st == 0:
+		if coins < EXTRAS[key][1]:
+			return false
+		coins -= EXTRAS[key][1]
+	var d: Dictionary = extras.get(id, {})
+	d[key] = 1 if st == 2 else 2
+	extras[id] = d
+	save()
+	return true
+
+
+func level(id: String, key: String) -> int:
+	return upgrades.get(id, {}).get(key, 0)
+
+
+func upgrade_price(id: String, key: String) -> int:
+	return UPGRADES[key][1] * (level(id, key) + 1)
+
+
+func buy_upgrade(id: String, key: String) -> bool:
+	var price := upgrade_price(id, key)
+	if level(id, key) >= MAX_LEVEL or coins < price:
+		return false
+	coins -= price
+	if not upgrades.has(id):
+		upgrades[id] = {}
+	upgrades[id][key] = level(id, key) + 1
 	save()
 	return true
 

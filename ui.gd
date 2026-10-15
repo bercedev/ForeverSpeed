@@ -10,6 +10,7 @@ extends CanvasLayer
 
 var main # main.gd; tipsiz, çünkü onun alanlarına doğrudan erişiyoruz
 var garage_open := false
+var extra_buttons := {} # garaj aksesuar düğmeleri
 var settings_open := false
 var g_car := 0
 var g_paint := 0
@@ -57,9 +58,24 @@ var tip_box: Control
 var tip_taps: Control
 var curtain: ColorRect
 
+var over_title: Label
+var mode_buttons: Array[Button] = []
+var timer_label: Label
+var chase_label: Label
+var flash_rect: ColorRect
+var cockpit: Control
+var pause_box: Control
+var hud_missions: Label
+var race_label: Label
+var np_label: Label # çalan parça
+var station_buttons: Array[Button] = []
+var cam_buttons: Array[Button] = []
+var up_rows := {} # geliştirme anahtarı -> [ad, çubuk, düğme]
+
 
 func _ready() -> void:
 	layer = 2
+	process_mode = Node.PROCESS_MODE_ALWAYS # duraklatma menüsü oyun dururken de çalışsın
 	main = get_parent()
 	build_play()
 	build_menu()
@@ -67,6 +83,7 @@ func _ready() -> void:
 	build_over()
 	build_tip()
 	build_settings()
+	build_pause()
 
 
 # Açık bir panel varken (garaj, ayarlar) dokunuş ve Enter oyunu başlatmaz.
@@ -78,6 +95,11 @@ func panel_open() -> bool:
 
 func build_play() -> void:
 	play_box = box()
+	cockpit = Control.new() # kokpit kamerasında pano, direksiyon ve silecekler; HUD'un arkasında
+	cockpit.set_anchors_preset(Control.PRESET_FULL_RECT)
+	cockpit.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	cockpit.draw.connect(draw_cockpit)
+	play_box.add_child(cockpit)
 	fps_label = label(play_box, 18, 28)
 	gauge = Control.new()
 	gauge.anchor_left = 0.5
@@ -107,6 +129,37 @@ func build_play() -> void:
 	popup_label.modulate.a = 0.0
 	toast_label = label(play_box, 34, 600)
 	toast_label.modulate.a = 0.0
+	timer_label = label(play_box, 40, 100) # zamana karşı: sağda, düğmelerin altında kalan süre
+	timer_label.anchor_left = 0.5
+	timer_label.anchor_right = 0.5
+	timer_label.offset_left = 150.0
+	timer_label.offset_right = 360.0
+	chase_label = label(play_box, 26, 440)
+	chase_label.add_theme_color_override("font_color", Color(1.0, 0.4, 0.4))
+	flash_rect = ColorRect.new() # radar flaşı
+	flash_rect.color = Color(1, 1, 1, 0)
+	flash_rect.set_anchors_preset(Control.PRESET_FULL_RECT)
+	flash_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	play_box.add_child(flash_rect)
+	icon_button(play_box, "pause", 306, 18, func(): main.set_pause(true))
+	icon_button(play_box, "radio", 224, 18, func(): main.change_station())
+	icon_button(play_box, "camera", 142, 18, func(): main.change_cam())
+	# sol üstte günlük görevler
+	hud_missions = Label.new()
+	hud_missions.offset_left = 12.0
+	hud_missions.offset_top = 14.0
+	hud_missions.add_theme_font_size_override("font_size", 14)
+	hud_missions.add_theme_constant_override("outline_size", 6)
+	hud_missions.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
+	hud_missions.add_theme_constant_override("line_spacing", 2)
+	hud_missions.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	play_box.add_child(hud_missions)
+	race_label = label(play_box, 22, 100)
+	race_label.anchor_left = 0.5
+	race_label.anchor_right = 0.5
+	race_label.offset_left = 150.0
+	race_label.offset_right = 360.0
+	race_label.add_theme_color_override("font_color", Color(1.0, 0.55, 0.5))
 	warn_label = label(play_box, 26, 392) # yol çalışması uyarısı
 	warn_label.add_theme_color_override("font_color", Color(1.0, 0.75, 0.2))
 	var wsb := StyleBoxFlat.new()
@@ -134,11 +187,22 @@ func update_hud() -> void:
 		return
 	gauge.queue_redraw()
 	nitro_bar.queue_redraw()
+	cockpit.visible = main.cam_mode() == 3
+	if cockpit.visible:
+		cockpit.queue_redraw()
+	if timer_label.visible:
+		set_text(timer_label, "%.1f" % main.time_left)
+		timer_label.add_theme_color_override("font_color", Color(1.0, 0.3, 0.3) if main.time_left < 5.0 else Color(1, 1, 1))
 	# metni yalnız değişince ata: her atama yazıyı yeniden şekillendirir
 	set_text(fps_label, "%d FPS" % Engine.get_frames_per_second())
 	set_text(score_label, str(int(main.score)))
 	set_text(km_label, "%.2f km" % (main.distance / 1000.0))
 	set_text(combo_label, main.hud_tags())
+	if Engine.get_process_frames() % 20 == 0: # görev metni sık değişmez
+		set_text(hud_missions, hud_missions_text())
+	race_label.visible = main.race_on
+	if main.race_on:
+		set_text(race_label, main.race_text())
 	hint_label.modulate.a = clampf(6.0 - main.run_time, 0.0, 1.0)
 
 
@@ -183,13 +247,14 @@ func draw_nitro() -> void:
 	var h := nitro_bar.size.y
 	var f: float = main.nitro_level()
 	var active: bool = main.nitro_t > 0.0
-	var is_ready: bool = main.nitro >= 1.0 and not active
+	var is_ready: bool = main.nitro >= 0.5 and not active # yarısı dolunca kullanılır
 	var col := Color(0.35, 0.5, 1.0).lerp(Color(0.8, 0.4, 1.0), f)
 	if is_ready:
 		col = col.lightened(0.3 + 0.3 * sin(main.alive * 8.0))
 	nitro_bar.draw_rect(Rect2(0, 0, w, h), Color(0, 0, 0, 0.45))
 	nitro_bar.draw_rect(Rect2(0, 0, w * f, h), col)
 	nitro_bar.draw_rect(Rect2(0, 0, w, h), Color(1, 1, 1, 0.6), false, 2.0)
+	nitro_bar.draw_line(Vector2(w * 0.5, 0), Vector2(w * 0.5, h), Color(1, 1, 1, 0.7), 2.0) # yarı çizgisi
 	var text := "NİTRO!" if active else ("NİTRO HAZIR · ÇİFT DOKUN" if is_ready else "NİTRO")
 	nitro_bar.draw_string(ThemeDB.fallback_font, Vector2(0, h + 20), text, HORIZONTAL_ALIGNMENT_CENTER, w, 16)
 
@@ -222,6 +287,143 @@ func show_play() -> void:
 	over_box.visible = false
 	garage_box.visible = false
 	play_box.visible = true
+	var free := Profile.mode == "free"
+	score_label.visible = not free # serbest sürüşte puan yok
+	combo_label.visible = not free
+	timer_label.visible = Profile.mode == "time"
+	chase_label.text = ""
+
+
+func _process(_dt: float) -> void:
+	if pause_box.visible:
+		set_text(np_label, main.now_playing()) # parça bitip yenisi başlarsa güncel kalsın
+
+
+func _notification(what: int) -> void:
+	if main == null:
+		return
+	if what == NOTIFICATION_WM_GO_BACK_REQUEST:
+		main.on_back()
+	elif what == NOTIFICATION_APPLICATION_FOCUS_OUT and OS.has_feature("mobile") and main.state == "play" and not main.paused:
+		main.set_pause(true) # telefonda uygulamadan çıkınca oyun durur
+
+
+func _unhandled_key_input(e: InputEvent) -> void:
+	if e.is_pressed() and not e.is_echo() and e.keycode in [KEY_ESCAPE, KEY_P] and main.state == "play":
+		main.set_pause(not main.paused) # masaüstünde Esc/P
+
+
+func close_panels() -> void:
+	if garage_open:
+		close_garage()
+	if settings_open:
+		close_settings()
+
+
+# --- Duraklatma ---
+
+func build_pause() -> void:
+	pause_box = box()
+	var dim := ColorRect.new()
+	dim.color = Color(0, 0, 0, 0.65)
+	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	pause_box.add_child(dim)
+	var t := label(pause_box, 56, 140, "DURAKLATILDI")
+	t.add_theme_font_override("font", title_font)
+	neon(button(pause_box, "DEVAM", 0, 250, 360, 84, func(): main.set_pause(false), false, 34), Color(1.0, 0.3, 0.8))
+	button(pause_box, "YENİDEN BAŞLA", 0, 352, 300, 62, func(): main.restart(), false, 24)
+	button(pause_box, "MENÜ", 0, 430, 300, 62, func(): main.to_menu(), false, 24)
+	label(pause_box, 24, 540, "RADYO").add_theme_color_override("font_color", Color(1.0, 0.75, 0.3))
+	np_label = label(pause_box, 22, 576)
+	np_label.add_theme_color_override("font_color", Color(1.0, 0.6, 0.9))
+	for i in Profile.STATIONS.size():
+		station_buttons.append(button(pause_box, Profile.STATIONS[i], -200.0 + i * 200.0, 618, 186, 58, pick_station.bind(i), false, 20))
+	button(pause_box, "SONRAKİ ŞARKI", 0, 690, 300, 58, func(): main.next_track(), false, 20)
+	label(pause_box, 24, 790, "KAMERA").add_theme_color_override("font_color", Color(1.0, 0.75, 0.3))
+	for i in Profile.CAMS.size():
+		cam_buttons.append(button(pause_box, Profile.CAMS[i], -225.0 + i * 150.0, 832, 140, 58, pick_cam.bind(i), false, 18))
+
+
+func show_pause(on: bool) -> void:
+	pause_box.visible = on
+	refresh_pause()
+
+
+func refresh_pause() -> void:
+	set_text(np_label, main.now_playing())
+	for i in station_buttons.size():
+		neon(station_buttons[i], Color(1.0, 0.3, 0.8) if i == Profile.radio else Color(0.4, 0.5, 0.65))
+	for i in cam_buttons.size():
+		neon(cam_buttons[i], Color(1.0, 0.3, 0.8) if i == Profile.cam else Color(0.4, 0.5, 0.65))
+
+
+func pick_station(i: int) -> void:
+	main.set_station(i)
+	refresh_pause()
+
+
+func pick_cam(i: int) -> void:
+	main.set_cam(i)
+	refresh_pause()
+
+
+# Yuvarlak neon düğme, üstüne kodla çizilmiş ikon (dosya gerekmez, her çözünürlükte keskin).
+func icon_button(parent: Control, kind: String, x: float, y: float, cb: Callable) -> Button:
+	var b := button(parent, "", x, y, 72, 72, cb, false, 18)
+	b.draw.connect(draw_icon.bind(b, kind))
+	return b
+
+
+func draw_icon(b: Button, kind: String) -> void:
+	var c := b.size * 0.5
+	var col := Color(0.9, 0.97, 1.0)
+	match kind:
+		"pause":
+			b.draw_rect(Rect2(c + Vector2(-11, -13), Vector2(8, 26)), col)
+			b.draw_rect(Rect2(c + Vector2(3, -13), Vector2(8, 26)), col)
+		"camera":
+			b.draw_rect(Rect2(c + Vector2(-17, -8), Vector2(34, 22)), col, false, 3.0)
+			b.draw_rect(Rect2(c + Vector2(-7, -13), Vector2(12, 5)), col)
+			b.draw_arc(c + Vector2(0, 3), 7.0, 0.0, TAU, 24, col, 3.0, true)
+		"radio":
+			# iki sekizlik nota ve bağı
+			for dx in [-9.0, 9.0]:
+				b.draw_circle(c + Vector2(dx - 4.0, 10.0), 5.5, col)
+				b.draw_line(c + Vector2(dx + 1.0, 10.0), c + Vector2(dx + 1.0, -12.0), col, 3.0)
+			b.draw_line(c + Vector2(-8.0, -12.0), c + Vector2(10.0, -15.0), col, 5.0)
+
+
+func set_chase(text: String) -> void:
+	set_text(chase_label, text)
+
+
+func flash() -> void:
+	flash_rect.color.a = 0.85
+	create_tween().tween_property(flash_rect, "color:a", 0.0, 0.35)
+
+
+# Kokpit: tavan, A sütunları, torpido, direksiyon; yağmurda silecekler süpürür.
+func draw_cockpit() -> void:
+	var w := cockpit.size.x
+	var h := cockpit.size.y
+	var dark := Color(0.015, 0.015, 0.02)
+	cockpit.draw_rect(Rect2(0, 0, w, h * 0.05), dark)
+	cockpit.draw_colored_polygon(PackedVector2Array([Vector2(0, 0), Vector2(w * 0.16, 0), Vector2(w * 0.03, h * 0.7), Vector2(0, h * 0.7)]), dark)
+	cockpit.draw_colored_polygon(PackedVector2Array([Vector2(w, 0), Vector2(w, h * 0.7), Vector2(w * 0.97, h * 0.7), Vector2(w * 0.84, 0)]), dark)
+	var dash := PackedVector2Array([Vector2(0, h)])
+	for i in 13:
+		var x := w * i / 12.0
+		dash.append(Vector2(x, h * 0.7 + 24.0 * pow((x / w - 0.5) * 2.0, 2.0)))
+	dash.append(Vector2(w, h))
+	cockpit.draw_colored_polygon(dash, dark)
+	cockpit.draw_arc(Vector2(w * 0.5, h * 1.02), 170.0, PI, TAU, 40, Color(0.06, 0.06, 0.07), 26.0, true)
+	if main.rain_level > 0.15:
+		var sw := sin(main.wipe_phase * PI) # 0 -> 1 -> 0: gidip gelir
+		for pivot in [Vector2(w * 0.28, h * 0.7), Vector2(w * 0.72, h * 0.7)]:
+			var a := lerpf(-PI * 0.97, -PI * 0.12, sw)
+			var tip: Vector2 = pivot + Vector2(cos(a), sin(a)) * h * 0.42
+			cockpit.draw_line(pivot, tip, Color(0.02, 0.02, 0.02), 7.0, true)
+			cockpit.draw_line(pivot, tip, Color(0.3, 0.3, 0.33, 0.6), 2.0, true)
 
 
 # --- Ana menü ---
@@ -283,10 +485,18 @@ func build_menu() -> void:
 	card.add_child(menu_card)
 	menu_box.add_child(card)
 
+	for i in Profile.MODES.size():
+		mode_buttons.append(button(menu_box, Profile.MODE_NAMES[i], -240.0 + i * 160.0, -525, 152, 58, pick_mode.bind(i), true, 16))
 	neon(button(menu_box, "GARAJ", 0, -430, 360, 84, open_garage, true, 34), Color(1.0, 0.3, 0.8))
 	button(menu_box, "AYARLAR", 0, -325, 300, 62, open_settings, true, 24)
 	tap_label = label(menu_box, 34, -220, "DOKUN VE BAŞLA", true)
 	tap_label.add_theme_font_override("font", title_font)
+
+
+func pick_mode(i: int) -> void:
+	Profile.mode = Profile.MODES[i]
+	Profile.save()
+	refresh_menu()
 
 
 func show_menu() -> void:
@@ -300,6 +510,8 @@ func show_menu() -> void:
 
 func refresh_menu() -> void:
 	best_pill.text = "REKOR  %d" % Profile.best
+	for i in mode_buttons.size():
+		neon(mode_buttons[i], Color(1.0, 0.3, 0.8) if Profile.MODES[i] == Profile.mode else Color(0.4, 0.5, 0.65))
 	coin_pill.text = "%d COIN" % Profile.coins
 	for c in menu_card.get_children():
 		c.free() # queue_free bir kare eski satırları da bırakır, kart iki kat uzar
@@ -493,6 +705,17 @@ func close_settings() -> void:
 	refresh_menu()
 
 
+# Oyun içi kısa görev listesi: ödülsüz, biten işaretli.
+func hud_missions_text() -> String:
+	var lines := PackedStringArray()
+	for m in Profile.missions:
+		var label: String = Profile.MISSIONS[m.type][0] % m.target
+		var pr := minf(m.progress, m.target)
+		var prog := ("%.1f" % pr) if String(m.type).ends_with("km") else str(int(pr))
+		lines.append(("TAMAM · " + label) if m.done else "%s  %s/%d" % [label, prog, m.target])
+	return "\n".join(lines)
+
+
 func missions_text() -> String:
 	return "\n".join(PackedStringArray(Profile.missions.map(func(m): return Profile.mission_text(m))))
 
@@ -505,13 +728,43 @@ func build_garage() -> void:
 	g_coins = label(garage_box, 26, 116)
 	g_name = label(garage_box, 48, 190)
 	g_status = label(garage_box, 26, 256)
+	for k in Profile.UPGRADES:
+		var y := 300.0 + up_rows.size() * 52.0
+		var l := label(garage_box, 22, y + 8.0, Profile.UPGRADES[k][0])
+		l.anchor_left = 0.5
+		l.anchor_right = 0.5
+		l.offset_left = -290.0
+		l.offset_right = -150.0
+		l.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+		var bar := ProgressBar.new()
+		bar.max_value = Profile.MAX_LEVEL
+		bar.show_percentage = false
+		bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		bar.anchor_left = 0.5
+		bar.anchor_right = 0.5
+		bar.offset_left = -140.0
+		bar.offset_right = 90.0
+		bar.offset_top = y + 16.0
+		bar.offset_bottom = y + 28.0
+		var bg := StyleBoxFlat.new()
+		bg.bg_color = Color(1, 1, 1, 0.12)
+		bg.set_corner_radius_all(5)
+		var fill := StyleBoxFlat.new()
+		fill.bg_color = Color(1.0, 0.35, 0.8)
+		fill.set_corner_radius_all(5)
+		bar.add_theme_stylebox_override("background", bg)
+		bar.add_theme_stylebox_override("fill", fill)
+		garage_box.add_child(bar)
+		up_rows[k] = [l, bar, button(garage_box, "", 190, y, 180, 44, buy_up.bind(k), false, 18)]
 	button(garage_box, "<", -300, 560, 90, 110, func(): pick_car(-1), false, 48)
 	button(garage_box, ">", 300, 560, 90, 110, func(): pick_car(1), false, 48)
-	g_paint_label = label(garage_box, 24, -380, "", true)
-	for i in Profile.PAINTS.size():
-		swatches.append(button(garage_box, "", (i - 4) * 70.0, -335, 56, 56, pick_paint.bind(i), true))
-	g_action = button(garage_box, "", 0, -245, 400, 80, garage_action, true, 30)
-	button(garage_box, "GERİ", 0, -145, 240, 64, close_garage, true, 26)
+	g_paint_label = label(garage_box, 24, -514, "", true)
+	for i in Profile.PAINTS.size(): # üç sıra: düz renkler, modifiye boyalar, desenler
+		swatches.append(button(garage_box, "", (i % 9 - 4) * 70.0, -472.0 + (i / 9) * 62.0, 56, 56, pick_paint.bind(i), true))
+	for k in Profile.EXTRAS:
+		extra_buttons[k] = button(garage_box, "", -150.0 if k == "fog" else 150.0, -282, 280, 54, use_extra.bind(k), true, 18)
+	g_action = button(garage_box, "", 0, -212, 400, 76, garage_action, true, 30)
+	button(garage_box, "GERİ", 0, -122, 240, 62, close_garage, true, 26)
 
 
 func open_garage() -> void:
@@ -558,6 +811,22 @@ func garage_action() -> void:
 	refresh_garage()
 
 
+func use_extra(k: String) -> void:
+	var id: String = Profile.CARS[g_car].id
+	if Profile.use_extra(id, k):
+		main.set_player_car(id, g_paint) # önizlemede hemen yansısın
+		main.buzz(30, 0.5)
+		main.play("confirm")
+	refresh_garage()
+
+
+func buy_up(k: String) -> void:
+	if Profile.buy_upgrade(Profile.CARS[g_car].id, k):
+		main.buzz(30, 0.5)
+		main.play("confirm")
+	refresh_garage()
+
+
 func refresh_garage() -> void:
 	var c: Dictionary = Profile.CARS[g_car]
 	var p: Array = Profile.PAINTS[g_paint]
@@ -566,7 +835,25 @@ func refresh_garage() -> void:
 	g_coins.text = "%d COIN" % Profile.coins
 	g_name.text = c.name
 	g_status.text = "SENİN" if car_owned else "%d COIN" % c.price
+	# geliştirmeler yalnız sahip olunan araçta
+	for k in up_rows:
+		var lv := Profile.level(c.id, k)
+		var price := Profile.upgrade_price(c.id, k)
+		var row: Array = up_rows[k]
+		for n in row:
+			(n as Control).visible = car_owned
+		(row[1] as ProgressBar).value = lv
+		var b: Button = row[2]
+		b.text = "MAKS" if lv >= Profile.MAX_LEVEL else "+ %d" % price
+		b.disabled = lv >= Profile.MAX_LEVEL or Profile.coins < price
 	g_paint_label.text = "BOYA: %s%s" % [p[0], "" if paint_owned else "  ·  %d COIN" % p[2]]
+	for k in extra_buttons:
+		var b: Button = extra_buttons[k]
+		var st := Profile.extra(c.id, k)
+		b.visible = car_owned
+		b.text = "%s · %d" % [Profile.EXTRAS[k][0], Profile.EXTRAS[k][1]] if st == 0 else "%s: %s" % [Profile.EXTRAS[k][0], "AÇIK" if st == 2 else "KAPALI"]
+		b.disabled = st == 0 and Profile.coins < Profile.EXTRAS[k][1]
+		neon(b, Color(1.0, 0.6, 0.15) if st == 2 else Color(0.4, 0.85, 1.0))
 	for i in swatches.size():
 		var col: Color = Profile.PAINTS[i][1] if i > 0 else Color(0.25, 0.25, 0.3)
 		style(swatches[i], Color(1, 1, 1) if i == g_paint else Color(1, 1, 1, 0.3), col, 28)
@@ -588,7 +875,8 @@ func refresh_garage() -> void:
 
 func build_over() -> void:
 	over_box = box()
-	label(over_box, 64, 230, "KAZA").add_theme_color_override("font_color", Color(1.0, 0.35, 0.3))
+	over_title = label(over_box, 64, 230, "KAZA")
+	over_title.add_theme_color_override("font_color", Color(1.0, 0.35, 0.3))
 	over_score = label(over_box, 52, 320)
 	over_detail = label(over_box, 26, 400)
 	label(over_box, 24, 540, "GÜNLÜK GÖREVLER").add_theme_color_override("font_color", Color(1.0, 0.75, 0.3))
@@ -597,9 +885,10 @@ func build_over() -> void:
 	button(over_box, "MENÜ", 0, -225, 240, 64, func(): main.to_menu(), true, 26)
 
 
-func show_over(score: int, km: float, earned: int, new_best: bool) -> void:
+func show_over(score: int, km: float, earned: int, new_best: bool, reason := "KAZA") -> void:
 	play_box.visible = false
 	over_box.visible = true
+	over_title.text = reason
 	over_score.text = str(score)
 	var best_line := "YENİ REKOR!" if new_best else "REKOR %d" % Profile.best
 	over_detail.text = "%.2f km   ·   +%d COIN\n%s" % [km, earned, best_line]

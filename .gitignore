@@ -1,3 +1,6 @@
 # Godot
 .godot/
 /android/
+
+# export çıktıları
+/build/
