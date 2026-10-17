@@ -3,9 +3,11 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://bbuxbtwguirpg"
-path="res://.godot/imported/e30_Image_5.png-94f49f5e50977d20c882ebefab3e648c.ctex"
+path.s3tc="res://.godot/imported/e30_Image_5.png-94f49f5e50977d20c882ebefab3e648c.s3tc.ctex"
+path.etc2="res://.godot/imported/e30_Image_5.png-94f49f5e50977d20c882ebefab3e648c.etc2.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
+"vram_texture": true
 }
 generator_parameters={
 "md5": "9bae6fed2725ff98f5d8f7efaa1adb3e"
@@ -14,11 +16,11 @@ generator_parameters={
 [deps]
 
 source_file="res://cars/e30/e30_Image_5.png"
-dest_files=["res://.godot/imported/e30_Image_5.png-94f49f5e50977d20c882ebefab3e648c.ctex"]
+dest_files=["res://.godot/imported/e30_Image_5.png-94f49f5e50977d20c882ebefab3e648c.s3tc.ctex", "res://.godot/imported/e30_Image_5.png-94f49f5e50977d20c882ebefab3e648c.etc2.ctex"]
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/uastc_level=0

@@ -3,9 +3,11 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://v3ck4bf077o0"
-path="res://.godot/imported/e30_Image_2.png-6df7de64e93a400d50742cdd159430cf.ctex"
+path.s3tc="res://.godot/imported/e30_Image_2.png-6df7de64e93a400d50742cdd159430cf.s3tc.ctex"
+path.etc2="res://.godot/imported/e30_Image_2.png-6df7de64e93a400d50742cdd159430cf.etc2.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
+"vram_texture": true
 }
 generator_parameters={
 "md5": "b4079ba990ab83dbbf08556e48216547"
@@ -14,17 +16,17 @@ generator_parameters={
 [deps]
 
 source_file="res://cars/e30/e30_Image_2.png"
-dest_files=["res://.godot/imported/e30_Image_2.png-6df7de64e93a400d50742cdd159430cf.ctex"]
+dest_files=["res://.godot/imported/e30_Image_2.png-6df7de64e93a400d50742cdd159430cf.s3tc.ctex", "res://.godot/imported/e30_Image_2.png-6df7de64e93a400d50742cdd159430cf.etc2.ctex"]
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/uastc_level=0
 compress/rdo_quality_loss=0.0
 compress/hdr_compression=1
-compress/normal_map=0
+compress/normal_map=1
 compress/channel_pack=0
 mipmaps/generate=true
 mipmaps/limit=-1

@@ -51,6 +51,91 @@ for o in meshes():
 select(meshes())
 bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
 
+# vcolor: k — rengi köşe renginde (UV ve doku yok, tek malzeme) olan modeller: yüz renkleri k kümeye ayrılır
+# (alanla ağırlıklı k-ortalama), her küme düz renkli bir malzeme olur ("vc00" en geniş alan). Oyunun boya ve
+# far sistemi malzemeye bakar; köşe rengi silinir. Tablo, boya ve lambaların hangi küme olduğunu seçmek için.
+if cfg.get("vcolor"):
+    import numpy as np
+    k = cfg["vcolor"]
+    for o in meshes():
+        me = o.data
+        if not me.color_attributes:
+            continue
+        ca = me.color_attributes[0]
+        cols = np.empty(len(ca.data) * 4, dtype=np.float32)
+        ca.data.foreach_get("color", cols)
+        cols = cols.reshape(-1, 4)[:, :3]
+        nf = len(me.polygons)
+        ls = np.empty(nf, dtype=np.int32)
+        lt = np.empty(nf, dtype=np.int32)
+        area = np.empty(nf, dtype=np.float32)
+        cen = np.empty(nf * 3, dtype=np.float32)
+        me.polygons.foreach_get("loop_start", ls)
+        me.polygons.foreach_get("loop_total", lt)
+        me.polygons.foreach_get("area", area)
+        me.polygons.foreach_get("center", cen)
+        cen = cen.reshape(-1, 3)
+        if ca.domain != 'CORNER': # nokta rengi: köşe başına çevir
+            vi = np.empty(len(me.loops), dtype=np.int32)
+            me.loops.foreach_get("vertex_index", vi)
+            cols = cols[vi]
+        x = np.power(np.clip(np.add.reduceat(cols, ls) / lt[:, None], 0.0, 1.0), 1.0 / 2.2) # sRGB'de kümele
+        w = area / area.sum()
+        cent = x[np.random.default_rng(0).choice(nf, k, replace=False, p=w)]
+        for _ in range(30):
+            lab = ((x[:, None, :] - cent[None, :, :]) ** 2).sum(-1).argmin(1)
+            for j in range(k):
+                m = lab == j
+                if m.any():
+                    cent[j] = np.average(x[m], axis=0, weights=area[m])
+        order = [j for j in sorted(range(k), key=lambda j: -area[lab == j].sum()) if (lab == j).any()] # boş küme yok
+        rank = np.zeros(k, dtype=np.int32)
+        me.materials.clear()
+        for r, j in enumerate(order):
+            rank[j] = r
+            mat = bpy.data.materials.new("vc%02d" % r)
+            mat.use_nodes = True
+            lin = np.power(cent[j], 2.2)
+            mat.node_tree.nodes["Principled BSDF"].inputs["Base Color"].default_value = (lin[0], lin[1], lin[2], 1.0)
+            mat.diffuse_color = (lin[0], lin[1], lin[2], 1.0) # Blender önizlemesi
+            me.materials.append(mat)
+            m = lab == j
+            c = cen[m]
+            print("VC vc%02d #%02x%02x%02x alan=%5.1f%% y=%.2f..%.2f z=%.2f..%.2f" % (r, *(cent[j] * 255).astype(int),
+                100.0 * area[m].sum() / area.sum(), c[:, 1].min(), c[:, 1].max(), c[:, 2].min(), c[:, 2].max()))
+        me.polygons.foreach_set("material_index", rank[lab])
+        me.color_attributes.remove(ca)
+    if cfg.get("dump"):
+        sys.exit(0)
+
+# cull: dışarıdan görünmeyen yüzeyler silinir (koltuk, motor bölmesi, iç paneller): her yüzeyden ~17 yöne ışın
+# atılır, hiçbiri aracın dışına çıkamıyorsa yüzey içeridedir. İç geometri azaltılınca dış yüzeyden taşıyıp
+# boyada leke ve sivri uç bırakıyordu; silinince azaltılacak üçgen de azalır (oyunda camlar koyu, içerisi görünmez).
+if cfg.get("cull"):
+    import math
+    from mathutils.bvhtree import BVHTree
+    dirs = []
+    for i in range(28): # küre üzerinde eşit aralıklı yönler (Fibonacci); aşağı bakanlar yok: oyun kamerası
+        zz = 1.0 - 2.0 * (i + 0.5) / 28.0 # alttan bakmaz, yalnız alttan görünen (kaput içi, taban) de silinir
+        if zz < -0.2:
+            continue
+        r = math.sqrt(1.0 - zz * zz)
+        a = i * math.pi * (3.0 - math.sqrt(5.0))
+        dirs.append(Vector((r * math.cos(a), r * math.sin(a), zz)))
+    for o in meshes():
+        bm = bmesh.new()
+        bm.from_mesh(o.data)
+        tree = BVHTree.FromBMesh(bm)
+        hidden = []
+        for f in bm.faces:
+            c = f.calc_center_median()
+            if not any(tree.ray_cast(c + d * 0.003, d, 30.0)[0] is None for d in dirs):
+                hidden.append(f)
+        bmesh.ops.delete(bm, geom=hidden, context='FACES')
+        bm.to_mesh(o.data)
+        bm.free()
+        print("GIZLI %s %d yüzey silindi" % (o.name, len(hidden)))
+
 # recolor: {"malzeme regex": [r, g, b]} — dokusuz modellerde beyaz kalan koltuk, lastik vb.
 for pat, rgb in cfg.get("recolor", {}).items():
     for mat in bpy.data.materials:
@@ -93,10 +178,11 @@ if cfg.get("split"):
         bpy.ops.mesh.separate(type='LOOSE')
         bpy.ops.object.mode_set(mode='OBJECT')
 
-# minik parçalar (yazı, vida) gider
+# minik parçalar (yazı, vida) gider; tiny: eşik (m). Gövdesi çok sayıda küçük parçadan oluşan modelde 0 (yoksa
+# boyada delikler açılır, alttaki yüzey görünür)
 for o in meshes():
     lo, hi = bbox(o)
-    if max(hi - lo) < 0.04:
+    if max(hi - lo) < cfg.get("tiny", 0.04):
         bpy.data.objects.remove(o)
 
 for o in meshes():
@@ -182,7 +268,9 @@ for m, objs in by_mat.items():
 # panelleri delik deşik oluyordu). target gövde için, wheel_tris tekerlek başına.
 total = sum(tris(o) for o in meshes())
 wl = [o for o in meshes() if o.name.startswith("wheel")]
-bd = [o for o in meshes() if not o.name.startswith("wheel")]
+# keep: bu malzemeler (regex) hiç azaltılmaz; gövdesi az üçgenli büyük yüzeyli modelde boya azaltılınca alttaki
+# iç yüzey dışarı taşıyıp boyada leke oluyordu. Bütçe kalan parçalara uygulanır.
+bd = [o for o in meshes() if not o.name.startswith("wheel") and not (cfg.get("keep") and re.search(cfg["keep"], o.name))]
 for objs, budget in [(wl, cfg.get("wheel_tris", 2500) * 4), (bd, cfg["target"])]:
     ratio = min(1.0, budget / max(1, sum(tris(o) for o in objs)))
     for o in objs:

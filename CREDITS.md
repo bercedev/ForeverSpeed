@@ -44,5 +44,11 @@ The third-party assets below keep their own licenses.
   (https://sketchfab.com/3d-models/nissan-gt-6efe436ad3144dcf8a280daf2965c28d), `cars/gtr/`, front wheels straightened;
   "Honda civic" by Aldios
   (https://sketchfab.com/3d-models/honda-civic-ff844e296f214e709c0d0691d031c68b), `cars/civic/`,
-  reduced from 672k to 48k triangles, front wheels straightened.
+  reduced from 672k to 48k triangles, front wheels straightened;
+  "2024 BMW M5 Sedan" by Nazh Design
+  (https://sketchfab.com/3d-models/2024-bmw-m5-sedan-d61d5cadc7784d988a0b623ebcba3a9f), `cars/m5/`,
+  vertex colours turned into materials, hidden interior removed, reduced from 389k to 47k triangles;
+  "2020 Ferrari SF90 Stradale" by Nazh Design
+  (https://sketchfab.com/3d-models/2020-ferrari-sf90-stradale-26f20b26a76341089ac81a7a61a94d1a), `cars/sf90/`,
+  vertex colours turned into materials, hidden interior removed, reduced from 235k to 48k triangles.
 - App icon (`icon.png`): generated for this project with OpenAI image generation via Codex CLI.

@@ -3,9 +3,11 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://r5tlvn2jq2hb"
-path="res://.godot/imported/challenger_Image_0.png-01150a611c4e31aa1c602a11b31933ae.ctex"
+path.s3tc="res://.godot/imported/challenger_Image_0.png-01150a611c4e31aa1c602a11b31933ae.s3tc.ctex"
+path.etc2="res://.godot/imported/challenger_Image_0.png-01150a611c4e31aa1c602a11b31933ae.etc2.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
+"vram_texture": true
 }
 generator_parameters={
 "md5": "93235f5799016422b97e06824365e222"
@@ -14,11 +16,11 @@ generator_parameters={
 [deps]
 
 source_file="res://cars/challenger/challenger_Image_0.png"
-dest_files=["res://.godot/imported/challenger_Image_0.png-01150a611c4e31aa1c602a11b31933ae.ctex"]
+dest_files=["res://.godot/imported/challenger_Image_0.png-01150a611c4e31aa1c602a11b31933ae.s3tc.ctex", "res://.godot/imported/challenger_Image_0.png-01150a611c4e31aa1c602a11b31933ae.etc2.ctex"]
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/uastc_level=0

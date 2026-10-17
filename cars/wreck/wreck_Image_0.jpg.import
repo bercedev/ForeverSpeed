@@ -3,9 +3,11 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://db8qbxr4jtox3"
-path="res://.godot/imported/wreck_Image_0.jpg-06626de5ba84949bd53422bd7ebe9fd1.ctex"
+path.s3tc="res://.godot/imported/wreck_Image_0.jpg-06626de5ba84949bd53422bd7ebe9fd1.s3tc.ctex"
+path.etc2="res://.godot/imported/wreck_Image_0.jpg-06626de5ba84949bd53422bd7ebe9fd1.etc2.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
+"vram_texture": true
 }
 generator_parameters={
 "md5": "33b33f52306050d45681807d00e31811"
@@ -14,11 +16,11 @@ generator_parameters={
 [deps]
 
 source_file="res://cars/wreck/wreck_Image_0.jpg"
-dest_files=["res://.godot/imported/wreck_Image_0.jpg-06626de5ba84949bd53422bd7ebe9fd1.ctex"]
+dest_files=["res://.godot/imported/wreck_Image_0.jpg-06626de5ba84949bd53422bd7ebe9fd1.s3tc.ctex", "res://.godot/imported/wreck_Image_0.jpg-06626de5ba84949bd53422bd7ebe9fd1.etc2.ctex"]
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/uastc_level=0

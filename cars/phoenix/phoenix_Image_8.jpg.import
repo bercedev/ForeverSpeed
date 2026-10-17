@@ -3,9 +3,11 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://dfl43pi3vgeem"
-path="res://.godot/imported/phoenix_Image_8.jpg-1f486bdc580c2afcbd8af15a25f93a7f.ctex"
+path.s3tc="res://.godot/imported/phoenix_Image_8.jpg-1f486bdc580c2afcbd8af15a25f93a7f.s3tc.ctex"
+path.etc2="res://.godot/imported/phoenix_Image_8.jpg-1f486bdc580c2afcbd8af15a25f93a7f.etc2.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
+"vram_texture": true
 }
 generator_parameters={
 "md5": "bcba42d1e1ed11195f7c8d08aced7d42"
@@ -14,11 +16,11 @@ generator_parameters={
 [deps]
 
 source_file="res://cars/phoenix/phoenix_Image_8.jpg"
-dest_files=["res://.godot/imported/phoenix_Image_8.jpg-1f486bdc580c2afcbd8af15a25f93a7f.ctex"]
+dest_files=["res://.godot/imported/phoenix_Image_8.jpg-1f486bdc580c2afcbd8af15a25f93a7f.s3tc.ctex", "res://.godot/imported/phoenix_Image_8.jpg-1f486bdc580c2afcbd8af15a25f93a7f.etc2.ctex"]
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/uastc_level=0

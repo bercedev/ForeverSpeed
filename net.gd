@@ -9,7 +9,9 @@ extends Node
 # sunucusundan öğrenir; adresler "kod" olarak elle (WhatsApp vb.) değiş tokuş edilir, iki taraf aynı anda
 # birbirine paket atarak NAT'ta delik açar (hole punching). Kod yerel ağ ve IPv6 adreslerini de taşır: aynı
 # Wi-Fi'da ve IPv6'lı mobil veride NAT'a takılmadan bağlanır. Bağlantı sahne yenilense de sürer (autoload).
-# ponytail: aktarma (TURN) sunucusu yok; iki taraf da simetrik NAT / CGNAT arkasındaysa bağlantı kurulamaz.
+# İki taraf da simetrik NAT / CGNAT arkasındaysa doğrudan bağlantı kurulamaz: kod yapıştırıldıktan 4 sn sonra
+# hâlâ bağlanılmadıysa ikisi de aktarma sunucusuna (tools/relay.py) aynı oda numarasıyla katılır, paketler oradan
+# geçer. Sunucu paketin içini okumaz; doğrulama yine anahtarlarla.
 # Aynı Wi-Fi: panel açıkken kod yerel ağa saniyede bir yayınlanır (LAN_PORT), arkadaş tek dokunuşla bağlanır;
 # yayın yalnız bağlanana kadar sürer (o arada aynı ağdaki herkes kodu görebilir).
 #
@@ -19,15 +21,19 @@ extends Node
 # verdiğinden hızlı artamaz. ponytail: trafik şifreli değil; kodu ele geçiren yarışa girebilir (IP de içerir).
 #
 # Mesajlar: hi (delik açma, canlı tutma), init (bağlantı kurulunca iki taraf araç bilgisini verir),
-# p/q (ping), want (yarışa hazırım: ikisi de hazırsa başlar), go (yarış başlar), rdy (sahne yüklendi: ikisi de hazır olunca 3 sn sayılır), s (yarış durumu,
+# p/q (ping), cfg (lobi: mod ve bot, ikimizde ortak), want (yarışa hazırım: ikisi de hazırsa başlar), go (yarış
+# başlar), pk (nitro taşını aldım), fsc (puan yarışında son puan), bft / bh (bot bitirdi / bota çarptım), rdy (sahne yüklendi: ikisi de hazır olunca 3 sn sayılır), s (yarış durumu,
 # 20/sn), bye (bağlantıyı bıraktım: karşı da kopmuş sayar), gh (alan aracı kayboldu), hit (çarpışma: karşı kaçırdıysa kendi payını uygular), pause/resume (duraklatma iki tarafta),
 # quit (yarıştan çıktı). Birkaç kez gönderilenler sıra numarası
-# taşır, kopyası atılır.
+# taşır, karşı her birine ack döner, kopyası atılır. Yarıştaki s (20/sn) sözlük değil, sabit ikili paket (send_state);
+# bitişteki son s sözlük olarak, sıra numarasıyla gider.
 
 signal changed # durum değişti (arayüz yenilensin)
 signal go(road: String, region: int) # yarış başlıyor (iki tarafta da)
 signal remote_pause(on: bool) # arkadaş duraklattı / devam dedi
 signal ghost(fid: int) # arkadaş trafik alanındaki bu araca çarptı, kayboldu
+signal picked(id: int) # arkadaş bu nitro taşını aldı
+signal bot_hit(kind: String) # arkadaş bota çarptı (botu süren biziz)
 signal hit(kind: String) # arkadaş çarpışma gördü: bizim payımız (front: öndeydik, rear: bindirdik, side)
 signal countdown(sec: float) # iki taraf da hazır: geri sayım (karşıdan gelen mesajla başlayan yarım ping kısa sayar)
 
@@ -35,9 +41,14 @@ signal countdown(sec: float) # iki taraf da hazır: geri sayım (karşıdan gele
 # (Google'ın stun1..4 adları da aynı IP'ye çıkıyor, ölçüm olmuyordu).
 const STUN := [["stun.l.google.com", 19302], ["stun.cloudflare.com", 3478]]
 const MAGIC := "FS1"
-const PROTO := 1 # init'teki sürüm: farklıysa yarış başlatılamaz
+const PROTO := 2 # init'teki sürüm: farklıysa yarış başlatılamaz (2: ikili durum paketi, onaylı mesajlar)
 const MAX_PACKET := 512
+const STATE_TAG := 0xB5 # ikili durum paketinin ilk baytı (sözlük paketleri 0x1B ile başlar)
+const RESEND_TRIES := 12 # onaylanmayan mesaj 0,25 sn arayla en çok bu kadar gider (3 sn)
 const LAN_PORT := 47811
+const RELAY_HOST := "" # aktarma sunucusunun adresi (alan adı ya da IP); boşsa sunucu kullanılmaz
+const RELAY_PORT := 47812
+const RELAY_MAGIC := "FSR1"
 const MAX_MPS := 190.0 # karşının yolu saniyede en çok bu kadar artabilir (~680 km/sa, oyunda erişilmez)
 
 var udp := PacketPeerUDP.new()
@@ -70,11 +81,14 @@ var _roam_n := 0
 var connected := false
 var paired := false # iki taraf da init'i aldı: yarış başlatılabilir
 var racing := false
+var lobby := {"mode": "race", "bot": false} # mod: race (4 km) ya da score (2 dk puan); bot: üçüncü yarışçı
+var mode := "race" # başlayan yarışın modu ve botu (başlatanınki)
+var bot := false
 var want := false # "YARIŞA HAZIRIM" dedik; yarış ikimiz de deyince başlar (kimse habersiz içeri çekilmesin)
 var peer_want := false
 var region := 0 # yarışın bölgesi (başlatanınki)
 var ping_ms := 0.0
-var remote := {"d": 0.0, "x": 0.0, "v": 0.0, "w": false, "ft": -1.0, "car": "", "paint": 0, "rim": 0, "quit": false} # karşının son durumu
+var remote := {"d": 0.0, "x": 0.0, "v": 0.0, "w": false, "nz": false, "bn": false, "ft": -1.0, "sc": 0.0, "fsc": -1, "bd": 0.0, "bx": 0.0, "bv": 0.0, "bft": -1.0, "car": "", "paint": 0, "rim": 0, "quit": false} # karşının son durumu
 # (w: kazada yanıp sönüyor, çarpışmaz; ft: bitiş süresi, bitirmediyse -1)
 var silence := 0.0 # karşıdan son paketten beri geçen sn
 var peer_paused := false # arkadaş duraklattı: uygulaması arka planda olabilir, kopma süresi uzun
@@ -93,6 +107,14 @@ var _s_ms := 0
 var _got_state := false # bu yarışta karşıdan konum geldi (hazırlıkta gelmez)
 var _state_quiet := 0.0 # yarışta, ikimiz de oynarken konumsuz geçen süre: kopma sayılır ("hi" gelse bile)
 var _self_paused := false
+var relay_host := RELAY_HOST # test başka sunucu verebilir
+var relay_port := RELAY_PORT
+var via_relay := false # bağlantı aktarma sunucusundan geçiyor
+var _relay: Array = [] # çözülmüş sunucu adresi [ip, port]
+var _relay_dns := -1
+var _relay_wait := 0.0 # kod yapıştırıldı: bu kadar sn sonra hâlâ bağlanılmadıysa sunucuya geçilir
+var _relay_on := false
+var _relay_ok := false # sunucu katılmayı onayladı
 var _connect_t := 0.0 # kod yapıştırıldı: bu kadar sn içinde bağlanamazsak delik açma durur, nedeni söylenir
 var _ready_wait := 0.0 # hazırız ama arkadaş hazır değil: çok sürerse yarış iptal (siyah ekranda kalınmasın)
 var _seq := 0
@@ -121,6 +143,8 @@ func open() -> void:
 		lan.bind(0, "0.0.0.0")
 	for h in STUN:
 		_dns.append([IP.resolve_hostname_queue_item(h[0], IP.TYPE_IPV4), h[1]])
+	if relay_host != "":
+		_relay_dns = IP.resolve_hostname_queue_item(relay_host, IP.TYPE_IPV4)
 	_code_t = 3.0
 	_say("ADRESİN BULUNUYOR…")
 
@@ -133,6 +157,13 @@ func close() -> void:
 	for d in _dns:
 		IP.erase_resolve_item(d[0])
 	_dns.clear()
+	if _relay_dns >= 0:
+		IP.erase_resolve_item(_relay_dns)
+	_relay_dns = -1
+	_relay = []
+	_relay_on = false
+	_relay_ok = false
+	via_relay = false
 	code = ""
 	hard = false
 	targets.clear()
@@ -192,8 +223,19 @@ func set_peer(text: String) -> bool:
 	targets = targets.slice(0, 6) # bizim kodumuzda en çok 6 adres: fazlası yabancı adrese paket attırmasın
 	peer_token = f[5]
 	_connect_t = 10.0
+	_relay_wait = 4.0
 	_say("BAĞLANILIYOR… ARKADAŞIN DA SENİN KODUNU YAPIŞTIRSIN" + (" (AĞI ZOR, DENENİYOR)" if peer_hard else ""))
 	return true
+
+
+# Lobi ayarı: ikimizde ortak (son değiştiren geçer); değişince ikimiz de yeniden "hazırım" demeliyiz.
+func set_lobby(key: String, val) -> void:
+	lobby[key] = val
+	want = false
+	peer_want = false
+	if paired:
+		_reliable({"t": "cfg", "mode": lobby.mode, "bot": lobby.bot})
+	changed.emit()
 
 
 func set_want(on: bool) -> void:
@@ -208,16 +250,61 @@ func set_want(on: bool) -> void:
 func start(road: String, rg: int) -> void:
 	if not paired or racing or not _pending.is_empty():
 		return
-	_pending = {"t": "go", "road": road, "rg": rg, "rid": randi() % 1000000}
+	_pending = {"t": "go", "road": road, "rg": rg, "rid": randi() % 1000000, "mode": lobby.mode, "bot": lobby.bot}
 	_reliable(_pending)
 	_begin_t = ping_ms / 2000.0
 
 
-# Yarışta her kare çağrılır, saniyede 20 kez gider.
-func send_state(d: float, x: float, v: float, wreck: bool) -> void:
+# Yarışta her kare çağrılır, saniyede 20 kez gider. b: botu biz sürüyorsak [yol, x, km/sa].
+func send_state(d: float, x: float, v: float, wreck: bool, sc: float, b: Array = [], nz := false, bn := false) -> void:
 	if connected and _send_t <= 0.0:
 		_send_t = 0.05
-		_send({"t": "s", "d": d, "x": x, "v": v, "w": wreck})
+		# sabit ikili düzen, 22 bayt (botlu 30): sözlük olarak anahtar adlarıyla 220-290 bayttı. Alanlar: etiket,
+		# karşının ve bizim anahtar, yol, x, hız, puan, bayraklar (kaza, nitro, bot nitrosu), botun yolu, x, hızı.
+		var pk := PackedByteArray()
+		pk.resize(30 if b.size() == 3 else 22)
+		var keys := _keys()
+		pk[0] = STATE_TAG
+		pk.encode_u32(1, keys[0].hex_to_int())
+		pk.encode_u32(5, keys[1].hex_to_int())
+		pk.encode_float(9, d)
+		pk.encode_half(13, x)
+		pk.encode_half(15, v)
+		pk.encode_float(17, sc)
+		pk[21] = int(wreck) | int(nz) << 1 | int(bn) << 2
+		if b.size() == 3:
+			pk.encode_float(22, b[0])
+			pk.encode_half(26, b[1])
+			pk.encode_half(28, b[2])
+		udp.set_dest_address(peer_ip, peer_port)
+		udp.put_packet(pk)
+
+
+# İkili durum paketi, sözlükteki "s" mesajının alanlarıyla: anahtar denetimi ve sınırlar ortak yoldan geçer.
+func _unpack_state(pk: PackedByteArray) -> Dictionary:
+	var f: int = pk[21]
+	var m := {"fs": 1, "t": "s", "k": "%08x" % pk.decode_u32(1), "me": "%08x" % pk.decode_u32(5),
+		"d": pk.decode_float(9), "x": pk.decode_half(13), "v": pk.decode_half(15), "sc": pk.decode_float(17),
+		"w": (f & 1) != 0, "nz": (f & 2) != 0, "bn": (f & 4) != 0}
+	if pk.size() == 30:
+		m.merge({"bd": pk.decode_float(22), "bx": pk.decode_half(26), "bv": pk.decode_half(28)})
+	return m
+
+
+func send_pick(id: int) -> void:
+	_reliable({"t": "pk", "id": id})
+
+
+func send_final_score(sc: int) -> void:
+	_reliable({"t": "fsc", "sc": sc})
+
+
+func send_bot_final(ft: float) -> void:
+	_reliable({"t": "bft", "ft": ft})
+
+
+func send_bot_hit(kind: String) -> void:
+	_reliable({"t": "bh", "kind": kind})
 
 
 # Son konum paketinin yaşı (sn): rakip bu kadar ileri tahmin edilir.
@@ -253,6 +340,7 @@ func _drop(msg: String, tell := true) -> void:
 	if tell and peer_ip != "":
 		for i in 3:
 			_send({"t": "bye"})
+	_resend.clear() # yeniden bağlanınca eski bağlantının mesajları karşıda yeniden işlenmesin
 	connected = false
 	paired = false
 	racing = false
@@ -290,6 +378,9 @@ func _process(dt: float) -> void:
 		var prt := udp.get_packet_port()
 		if _stun_ips.get(ip, -1) == prt:
 			_stun_reply(pk, ip)
+		elif not _relay.is_empty() and ip == _relay[0] and prt == _relay[1] and pk.size() >= 4 \
+				and pk.slice(0, 4).get_string_from_ascii() == RELAY_MAGIC:
+			_relay_ok = true # katılma onayı (oyun paketleri sunucudan da gelir, onlar _recv'e)
 		else:
 			_recv(pk, ip, prt)
 	for d in _dns.duplicate():
@@ -300,6 +391,17 @@ func _process(dt: float) -> void:
 			_stun_ips[IP.get_resolve_item_address(d[0])] = d[1]
 		IP.erase_resolve_item(d[0])
 		_dns.erase(d)
+	if _relay_dns >= 0 and IP.get_resolve_item_status(_relay_dns) != IP.RESOLVER_STATUS_WAITING:
+		if IP.get_resolve_item_status(_relay_dns) == IP.RESOLVER_STATUS_DONE and IP.get_resolve_item_address(_relay_dns) != "":
+			_relay = [IP.get_resolve_item_address(_relay_dns), relay_port]
+		IP.erase_resolve_item(_relay_dns)
+		_relay_dns = -1
+	if not connected and not targets.is_empty() and not _relay.is_empty() and not _relay_on:
+		_relay_wait -= dt
+		if _relay_wait <= 0.0: # doğrudan olmadı: sunucuya katıl (arkadaş da 4 sn sonra katılır)
+			_relay_on = true
+			_connect_t = maxf(_connect_t, 12.0)
+			_say("BAĞLANILIYOR… SUNUCU ÜZERİNDEN DENENİYOR")
 	n = 0
 	while lan.get_available_packet_count() > 0 and n < 64:
 		n += 1
@@ -324,14 +426,18 @@ func _process(dt: float) -> void:
 	if not _pending.is_empty():
 		_begin_t -= dt
 		if _begin_t <= 0.0:
-			_begin(_pending.road, _pending.rg, _pending.rid)
+			_begin(_pending.road, _pending.rg, _pending.rid, _pending.mode, _pending.bot)
 			_pending = {}
 	if not connected and not targets.is_empty():
 		_connect_t -= dt
 		if _connect_t <= 0.0:
 			targets.clear()
 			_spray = []
-			if no_inet:
+			if _relay_on and not _relay_ok:
+				_say("BAĞLANAMADI · SUNUCUYA ULAŞILAMADI, İNTERNETİNİ KONTROL ET")
+			elif _relay_on:
+				_say("BAĞLANAMADI · ARKADAŞIN SUNUCUYA GELMEDİ, İKİNİZ DE KODU YAPIŞTIRIN")
+			elif no_inet:
 				_say("BAĞLANAMADI · İNTERNET ADRESİN BULUNAMADI, AYNI WI-FI'DA DENEYİN")
 			elif hard and peer_hard:
 				_say("BAĞLANAMADI · İKİNİZİN AĞI DA DIŞARIDAN BAĞLANTIYA KAPALI, BİRİNİZ BAŞKA AĞ DENESİN")
@@ -365,7 +471,7 @@ func _process(dt: float) -> void:
 		for ip in _stun_ips:
 			udp.set_dest_address(ip, _stun_ips[ip])
 			udp.put_packet(_stun_request())
-	for r in _resend:
+	for r in _resend: # onay ("ack") gelene kadar
 		_send(r[0])
 		r[1] -= 1
 	_resend = _resend.filter(func(r): return r[1] > 0)
@@ -374,6 +480,10 @@ func _process(dt: float) -> void:
 			_send({"t": "hi"}, t[0], t[1])
 		# arkadaşın NAT'ı her hedefe yeni port açıyor: bize açacağı port kodundakinin (en son gördüğü) biraz
 		# ilerisinde olur, çoğu modem portları sırayla verir (kod gittikten sonra evdeki başka cihazlar da sayacı ilerletir)
+		if _relay_on: # sunucuya katıl (onay gelene kadar ve sonra da canlı tut), delik açma paketi oradan da gider
+			udp.set_dest_address(_relay[0], _relay[1])
+			udp.put_packet((RELAY_MAGIC + _room()).to_ascii_buffer())
+			_send({"t": "hi"}, _relay[0], _relay[1])
 		if not _spray.is_empty() and not hard: # biz de zorsak her paket modemde yeni port açar, tahmini bozar
 			for k in 32:
 				var pp: int = _spray[1] - 8 + (_spray_i * 32 + k) % 128
@@ -386,31 +496,56 @@ func _process(dt: float) -> void:
 		_send({"t": "hi"}) # bağlantı canlı kalsın: duraklatmada durum paketi gitmez, NAT eşlemesi de düşer
 
 
+# Oda numarası: iki kod anahtarından, iki tarafta aynı (sıralı), dışarıdan tahmin edilemez.
+func _room() -> String:
+	return (mini_str(token, peer_token) + maxi_str(token, peer_token)).sha256_text().substr(0, 32)
+
+
+static func mini_str(a: String, b: String) -> String:
+	return a if a < b else b
+
+
+static func maxi_str(a: String, b: String) -> String:
+	return b if a < b else a
+
+
+# [karşının anahtarı, bizimki]: karşının anahtarını bilmeyenin paketi atılır.
+func _keys() -> PackedStringArray:
+	var sess := _peer_has_sess and _peer_sess != ""
+	return PackedStringArray([_peer_sess if sess else peer_token, _sess if sess else token])
+
+
 func _send(m: Dictionary, ip := peer_ip, prt := peer_port) -> void:
 	var out := m.duplicate()
 	out["fs"] = 1
-	var sess := _peer_has_sess and _peer_sess != ""
-	out["k"] = _peer_sess if sess else peer_token # karşının anahtarı: onu bilmeyen paketi atılır
-	out["me"] = _sess if sess else token
+	var keys := _keys()
+	out["k"] = keys[0]
+	out["me"] = keys[1]
 	udp.set_dest_address(ip, prt)
 	udp.put_packet(var_to_bytes(out))
 
 
+# Sıra numaralı mesaj: karşı her kopyasına "ack" döner, onaylanana kadar tekrar gider (önceden onaysız 3 kez
+# gidiyordu: üçü de kaybolunca yarış başlangıcı ve bitişi zaman aşımına kalıyordu).
 func _reliable(m: Dictionary) -> void:
 	_seq += 1
 	m["n"] = _seq
 	_send(m)
-	_resend.append([m, 3])
+	_resend.append([m, RESEND_TRIES])
 
 
 func _send_init() -> void:
-	_send({"t": "init", "v": PROTO, "car": car, "paint": paint, "rim": rim, "sk": _sess, "got": _got_init})
+	_send({"t": "init", "v": PROTO, "car": car, "paint": paint, "rim": rim, "sk": _sess, "got": _got_init, "mode": lobby.mode, "bot": lobby.bot})
 
 
 func _recv(pk: PackedByteArray, ip: String, prt: int) -> void:
-	if pk.size() < 8 or pk.size() > MAX_PACKET or (pk.decode_u32(0) & 0xFF) != TYPE_DICTIONARY:
+	var m
+	if (pk.size() == 22 or pk.size() == 30) and pk[0] == STATE_TAG:
+		m = _unpack_state(pk)
+	elif pk.size() >= 8 and pk.size() <= MAX_PACKET and (pk.decode_u32(0) & 0xFF) == TYPE_DICTIONARY:
+		m = bytes_to_var(pk) # nesne çözülmez (bytes_to_var_with_objects değil)
+	else:
 		return
-	var m = bytes_to_var(pk) # nesne çözülmez (bytes_to_var_with_objects değil)
 	if not (m is Dictionary) or m.get("fs") != 1 or not (m.get("k") is String) or not (m.get("me") is String):
 		return
 	var k: String = m.k
@@ -434,11 +569,13 @@ func _recv(pk: PackedByteArray, ip: String, prt: int) -> void:
 				peer_ip = ip
 				peer_port = prt
 				_roam_n = 0
+				via_relay = not _relay.is_empty() and ip == _relay[0] and prt == _relay[1]
 	else:
 		connected = true
 		peer_ip = ip
 		peer_port = prt
 		peer_token = me
+		via_relay = not _relay.is_empty() and ip == _relay[0] and prt == _relay[1]
 		_sess = "%08x" % randi()
 		_peer_sess = ""
 		_peer_has_sess = false
@@ -457,6 +594,8 @@ func _recv(pk: PackedByteArray, ip: String, prt: int) -> void:
 	silence = 0.0
 	if m.has("n"): # birkaç kez gönderilen mesajın kopyası; pause/resume ayrıca sıralı (sonuncusu geçer)
 		var seq := int(_num(m, "n"))
+		# kopyası da onaylanır (önceki onay kaybolmuş olabilir). Alan "a": "n" olsaydı onay da sıralı mesaj sayılırdı.
+		_send({"t": "ack", "a": seq})
 		if seq <= _seen_floor or _seen.has(seq):
 			return
 		_seen[seq] = true
@@ -482,9 +621,14 @@ func _recv(pk: PackedByteArray, ip: String, prt: int) -> void:
 				remote.paint = int(_num(m, "paint")) # aralığı oyun denetler
 				remote.rim = int(_num(m, "rim"))
 				paired = m.get("v") == PROTO
+				if peer_token < token: # lobi ayarı farklıysa anahtarı küçük olanınki geçer
+					_take_lobby(m)
 				_say("HAZIR · YARIŞI İKİNİZDEN BİRİ BAŞLATSIN" if paired else "SÜRÜMLER FARKLI · OYUNU GÜNCELLEYİN")
 			if not m.get("got", true):
 				_send_init() # bizimki ona ulaşmamış
+		"ack":
+			var n := int(_num(m, "a"))
+			_resend = _resend.filter(func(r): return r[0].n != n)
 		"p":
 			_send({"t": "q", "ts": _num(m, "ts")})
 		"q":
@@ -496,13 +640,30 @@ func _recv(pk: PackedByteArray, ip: String, prt: int) -> void:
 			# ikimiz aynı anda bastıysak anahtarı küçük olanınki geçer
 			if paired and not racing and (_pending.is_empty() or peer_token < token):
 				_pending = {}
-				_begin(str(m.get("road", "two")), int(_num(m, "rg")), int(_num(m, "rid")))
+				_begin(str(m.get("road", "two")), int(_num(m, "rg")), int(_num(m, "rid")), str(m.get("mode", "race")), m.get("bot") == true)
 		"rdy":
 			_peer_rid = int(_num(m, "rid")) # go'dan önce gelebilir (sıra karışırsa): saklanır
 			_check_ready(true)
 		"want":
 			peer_want = m.get("on") == true
 			changed.emit()
+		"cfg":
+			_take_lobby(m)
+			want = false
+			peer_want = false
+			changed.emit()
+		"pk":
+			if racing:
+				picked.emit(int(_num(m, "id")))
+		"fsc":
+			if racing:
+				remote.fsc = maxi(int(_num(m, "sc")), 0)
+		"bft":
+			if racing:
+				remote.bft = maxf(_num(m, "ft"), 0.0)
+		"bh":
+			if racing and m.get("kind") in ["front", "rear", "side"]:
+				bot_hit.emit(m.kind)
 		"bye":
 			_drop("ARKADAŞIN BAĞLANTISI KOPTU", false)
 			return
@@ -516,6 +677,14 @@ func _recv(pk: PackedByteArray, ip: String, prt: int) -> void:
 			remote.x = clampf(_num(m, "x"), -12.0, 12.0)
 			remote.v = clampf(_num(m, "v"), 0.0, 600.0)
 			remote.w = m.get("w") == true
+			remote.nz = m.get("nz") == true # arkadaşın nitrosu (alev)
+			remote.bn = m.get("bn") == true
+			# puan saniyede en çok ~5000 artabilir (yakın geçiş, kombo, nitro); geri gitmez
+			remote.sc = clampf(_num(m, "sc"), remote.sc, remote.sc + 5000.0 * minf(now - _s_ms, 1000.0) / 1000.0 + 3000.0)
+			if m.has("bd"):
+				remote.bd = clampf(_num(m, "bd"), remote.bd, remote.bd + MAX_MPS * minf(now - _s_ms, 1000.0) / 1000.0 + 30.0)
+				remote.bx = clampf(_num(m, "bx"), -12.0, 12.0)
+				remote.bv = clampf(_num(m, "bv"), 0.0, 600.0)
 			if m.has("ft"): # oyun, mesajın geliş anına göre ayrıca denetler (main.update_online)
 				remote.ft = maxf(_num(m, "ft"), 0.0)
 			_s_ms = now
@@ -561,12 +730,26 @@ func _lan_recv(pk: PackedByteArray) -> void:
 
 func _num(m: Dictionary, k: String) -> float:
 	var v = m.get(k, 0.0)
-	return float(v) if v is float or v is int else 0.0
+	if v is float:
+		return v if is_finite(v) else 0.0 # NaN/sonsuz clampf'ten geçip konumu bozuyordu
+	return float(v) if v is int else 0.0
 
 
-func _begin(road: String, rg: int, rid: int) -> void:
+func _take_lobby(m: Dictionary) -> void:
+	lobby = {"mode": "score" if m.get("mode") == "score" else "race", "bot": m.get("bot") == true}
+
+
+func _begin(road: String, rg: int, rid: int, md := "race", b := false) -> void:
 	racing = true
 	race_id = rid
+	mode = "score" if md == "score" else "race"
+	bot = b and mode == "race"
+	remote.sc = 0.0
+	remote.fsc = -1
+	remote.bd = 0.0
+	remote.bx = 0.0
+	remote.bv = 0.0
+	remote.bft = -1.0
 	want = false
 	peer_want = false
 	_me_ready = false

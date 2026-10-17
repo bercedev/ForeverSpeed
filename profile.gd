@@ -23,6 +23,8 @@ const CARS := [
 	{"id": "p:sport", "name": "SPORT X", "price": 9500, "top": 28.0, "accel": 1.25},
 	{"id": "p:m4", "name": "M4 CSL", "price": 10800, "top": 30.0, "accel": 1.3},
 	{"id": "p:gtr", "name": "GT-R", "price": 11500, "top": 32.0, "accel": 1.35},
+	{"id": "p:m5", "name": "M5", "price": 12500, "top": 33.0, "accel": 1.38},
+	{"id": "p:sf90", "name": "SF90 STRADALE", "price": 14000, "top": 36.0, "accel": 1.45},
 ]
 # Listeden çıkan eski (Kenney) araçlar: sahibine fiyatı geri verilir.
 const RETIRED := {"taxi": 1200, "sedan-sports": 1500, "hatchback-sports": 2500, "suv-luxury": 3500,
@@ -129,7 +131,7 @@ var missions: Array = []
 
 func _ready() -> void:
 	var cfg := ConfigFile.new()
-	if cfg.load(PATH) == OK:
+	if cfg.load(PATH) == OK or cfg.load(PATH + ".tmp") == OK: # kayıt yeniden adlandırılmadan kesildiyse yan dosya
 		coins = cfg.get_value("p", "coins", 0)
 		best = cfg.get_value("p", "best", 0)
 		cars = cfg.get_value("p", "cars", ["p:e30"])
@@ -179,7 +181,10 @@ func save() -> void:
 		cfg.set_value("p", k, get(k))
 	cfg.set_value("m", "day", day)
 	cfg.set_value("m", "list", missions)
-	cfg.save(PATH)
+	# önce yan dosyaya, sonra yeniden adlandırma: yazarken uygulama öldürülürse eski kayıt sağlam kalır
+	# (doğrudan yazmada yarım kalan dosya açılışta okunamıyor, bütün ilerleme sıfırlanıyordu)
+	if cfg.save(PATH + ".tmp") == OK:
+		DirAccess.rename_absolute(PATH + ".tmp", PATH)
 
 
 # Her gün aynı tarihten türetilen 3 farklı görev.

@@ -3,9 +3,11 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://blnk7cni8p33n"
-path="res://.godot/imported/cop_Image_7.jpg-b90b3615c684ce26a148d4b54e80f39a.ctex"
+path.s3tc="res://.godot/imported/cop_Image_7.jpg-b90b3615c684ce26a148d4b54e80f39a.s3tc.ctex"
+path.etc2="res://.godot/imported/cop_Image_7.jpg-b90b3615c684ce26a148d4b54e80f39a.etc2.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
+"vram_texture": true
 }
 generator_parameters={
 "md5": "e10870878a2410d72d8227026c4096d5"
@@ -14,11 +16,11 @@ generator_parameters={
 [deps]
 
 source_file="res://cars/cop/cop_Image_7.jpg"
-dest_files=["res://.godot/imported/cop_Image_7.jpg-b90b3615c684ce26a148d4b54e80f39a.ctex"]
+dest_files=["res://.godot/imported/cop_Image_7.jpg-b90b3615c684ce26a148d4b54e80f39a.s3tc.ctex", "res://.godot/imported/cop_Image_7.jpg-b90b3615c684ce26a148d4b54e80f39a.etc2.ctex"]
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/uastc_level=0

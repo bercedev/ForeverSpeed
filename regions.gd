@@ -142,10 +142,12 @@ static func make_chunk(i: int) -> Node3D:
 		p.set_meta("mm_" + side, mms)
 		p.set_meta("rail_" + side, rail)
 
+	var groups: Array[Node3D] = []
 	for r in 4:
 		var g := Node3D.new()
 		g.name = "r%d" % r
 		p.add_child(g)
+		groups.append(g)
 		var deco := Node3D.new() # tünelin içinde gizlenen kısım
 		deco.name = "deco"
 		g.add_child(deco)
@@ -154,6 +156,12 @@ static func make_chunk(i: int) -> Node3D:
 			CITY: _city(g, deco)
 			BRIDGE: _bridge(g, deco, i)
 			COAST: _coast(g, deco)
+	p.set_meta("groups", groups)
+	# configure görünmeyen bölgeleri ağaçtan çıkarır: parça silinirken onlar da silinsin
+	p.tree_exiting.connect(func():
+		for g in groups:
+			if g.get_parent() == null:
+				g.queue_free())
 	return p
 
 
@@ -175,20 +183,29 @@ static func set_widen(p: Node3D, mode: int, side := 1) -> void:
 		if p.get_meta("lamp_right") == (s > 0):
 			(p.get_meta("lamp") as Node3D).position.x = s * [0.0, WIDEN, WIDEN * 0.5, WIDEN * 0.5][m]
 		if s > 0: # sahil duvarı yalnız sağda
-			var wall: MeshInstance3D = p.get_node("r%d" % COAST).get_meta("wall")
+			var wall: MeshInstance3D = (p.get_meta("groups")[COAST] as Node3D).get_meta("wall")
 			wall.position.x = 8.7 + [0.0, WIDEN, WIDEN * 0.5, WIDEN * 0.5][m]
 			wall.rotation.y = rail.rotation.y
 			wall.scale.z = rail.scale.z
 
 
 # edge: parça bölgenin ilk ya da son birkaç parçasında (köprüde kıyı görünür, boşluğa açılmasın)
-static func configure(p: Node3D, r: int, edge := false) -> void:
+# Görünmeyen bölgeler ağaçtan çıkarılır: parçalar her karede kayar, ağaçtaki her düğümün konumu da güncellenir
+# (tablette karenin büyük kısmı buydu). all: hepsi ağaçta ve görünür (açılışta shader ısıtma).
+static func configure(p: Node3D, r: int, edge := false, all := false) -> void:
 	p.set_meta("region", r)
-	p.set_meta("deco", p.get_node("r%d/deco" % r)) # her karede yol aramasın
-	for k in 4:
-		p.get_node("r%d" % k).visible = k == r
-	(p.get_node("r%d/shore" % BRIDGE) as Node3D).visible = edge
-	(p.get_node("r%d/sea" % BRIDGE) as Node3D).visible = not edge
+	p.set_meta("edge", edge)
+	var groups: Array = p.get_meta("groups")
+	for k in groups.size():
+		var g: Node3D = groups[k]
+		var want := all or k == r
+		if want and g.get_parent() == null:
+			p.add_child(g)
+		elif not want and g.get_parent() != null:
+			p.remove_child(g)
+	p.set_meta("deco", (groups[r] as Node3D).get_node("deco")) # her karede yol aramasın
+	(groups[BRIDGE] as Node3D).get_node("shore").visible = edge or all
+	(groups[BRIDGE] as Node3D).get_node("sea").visible = not edge or all
 
 
 # Gövde ve yaprak katmanlarından iki yüzeyli ağaç. layers: [taban yarıçapı, boy, merkez yüksekliği].

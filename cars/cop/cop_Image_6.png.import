@@ -3,9 +3,11 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://btxef7rwxriia"
-path="res://.godot/imported/cop_Image_6.png-ac7cdd7a1ec98bd1731f70c538046f57.ctex"
+path.s3tc="res://.godot/imported/cop_Image_6.png-ac7cdd7a1ec98bd1731f70c538046f57.s3tc.ctex"
+path.etc2="res://.godot/imported/cop_Image_6.png-ac7cdd7a1ec98bd1731f70c538046f57.etc2.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
+"vram_texture": true
 }
 generator_parameters={
 "md5": "b5dec627af1fbd4fba36c095b641f7c6"
@@ -14,11 +16,11 @@ generator_parameters={
 [deps]
 
 source_file="res://cars/cop/cop_Image_6.png"
-dest_files=["res://.godot/imported/cop_Image_6.png-ac7cdd7a1ec98bd1731f70c538046f57.ctex"]
+dest_files=["res://.godot/imported/cop_Image_6.png-ac7cdd7a1ec98bd1731f70c538046f57.s3tc.ctex", "res://.godot/imported/cop_Image_6.png-ac7cdd7a1ec98bd1731f70c538046f57.etc2.ctex"]
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/uastc_level=0

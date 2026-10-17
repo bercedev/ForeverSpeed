@@ -45,6 +45,7 @@ var set_rows := [] # [düğmeler, seçili indeksi veren Callable]
 var signs: Control
 var works_d := -1.0 # yol çalışmasına kalan m; 0 içindeyiz, < 0 yok
 var works_sub := ""
+var works_icon := "cone" # cone: yol çalışması, crash: kaza yeri, tree: devrik ağaç
 var radar_d := -1.0
 var chase_s := -1.0 # polis kovalamacasında kalan sn
 var near_label: Label # yakın geçiş puanı: arabanın dibinde, küçük
@@ -55,6 +56,8 @@ var on_status: Label
 var on_code: Label
 var on_copy: Button
 var on_start: Button
+var on_mode: Button # lobi: mod (4 km yarış / 2 dk puan) ve bot; ikinizde ortak
+var on_bot: Button
 var on_lan: Array[Button] = [] # aynı Wi-Fi'da bulunanlar (en çok iki): tek dokunuşla bağlan
 var pause_go: Button # DEVAM: arkadaş durdurduysa pasif
 
@@ -86,6 +89,11 @@ var counting := false
 var hud_missions: Label
 var race_label: Label
 var hb_btn: Button
+# çizimde kullanılan kutular bir kez kurulur (her karede yeni StyleBox üretiliyordu); değişen renk çizimde atanır
+var radar_sb := sb_box(10, 2, Color(0.05, 0.25, 0.8), Color(1, 1, 1))
+var chase_sb := sb_box(10, 2, Color(0.08, 0.08, 0.12), Color(1.0, 0.25, 0.25))
+var mirror_sb := sb_box(14, 3, Color(0.05, 0.06, 0.09), Color(0.025, 0.026, 0.032))
+var screen_sb := sb_box(10, 1, Color(0.02, 0.04, 0.07), Color(0.3, 0.7, 1.0, 0.35))
 var rival_back: Label # rakip geride: altta ok ve mesafe
 var racers: Array[Label] = [] # online yarışta solda üstte katılımcılar: sen ve arkadaşın (ping'iyle)
 var np_label: Label # çalan parça
@@ -169,6 +177,7 @@ func build_play() -> void:
 	play_box.add_child(near_label)
 	flash_rect = ColorRect.new() # radar flaşı
 	flash_rect.color = Color(1, 1, 1, 0)
+	flash_rect.visible = false # saydamken de tam ekran çiziliyordu
 	flash_rect.set_anchors_preset(Control.PRESET_FULL_RECT)
 	flash_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	play_box.add_child(flash_rect)
@@ -176,7 +185,7 @@ func build_play() -> void:
 	icon_button(play_box, "radio", 224, 18, func(): main.change_station())
 	icon_button(play_box, "camera", 142, 18, func(): main.change_cam())
 	# el freni: sağ altta, başparmağın altında; basılı tutulur. Dokunuşu main okur (ikinci parmakla da çalışsın), düğme yalnız görüntü
-	hb_btn = button(play_box, "", 262, -250, 116, 116, func(): pass, true, 16)
+	hb_btn = button(play_box, "", 262, -372, 116, 116, func(): pass, true, 16)
 	hb_btn.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	hb_btn.draw.connect(draw_icon.bind(hb_btn, "handbrake"))
 	# sol üstte günlük görevler
@@ -189,7 +198,7 @@ func build_play() -> void:
 	hud_missions.add_theme_constant_override("line_spacing", 2)
 	hud_missions.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	play_box.add_child(hud_missions)
-	for i in 2:
+	for i in 3:
 		var r := Label.new()
 		r.offset_left = 12.0
 		r.offset_top = 78.0 + i * 24.0
@@ -223,6 +232,12 @@ func build_play() -> void:
 	hint_label = label(play_box, 24, -260, "Sağa sola kaydır: direksiyon\nBasılı tut: fren\nÇift dokun: nitro", true)
 
 
+func redraw_if(c: CanvasItem, key) -> void:
+	if c.get_meta("draw_key", null) != key:
+		c.set_meta("draw_key", key)
+		c.queue_redraw()
+
+
 func update_hud() -> void:
 	if tip_box.visible:
 		tip_taps.queue_redraw()
@@ -231,18 +246,23 @@ func update_hud() -> void:
 		speed_lines.queue_redraw()
 	if not play_box.visible:
 		return
-	gauge.queue_redraw()
+	# çizimler yalnız gösterdiği değer değişince yenilenir: her kare çizmek (yazı şekillendirme dahil) zayıf
+	# tablette karenin birkaç ms'siydi; yanıp sönenler 15 Hz'de yenilenir
+	redraw_if(gauge, Vector4i(int(main.kmh), main.gear, int(main.rpm * 40.0), int(main.nitro_t > 0.0)))
 	signs.visible = works_d >= 0.0 or radar_d >= 0.0 or chase_s >= 0.0 or main.against_traffic()
 	if signs.visible:
-		signs.queue_redraw()
-	nitro_bar.queue_redraw()
-	cockpit.visible = main.cam_mode() == 3
+		redraw_if(signs, [int(main.alive * 15.0), int(works_d), int(radar_d), int(chase_s * 10.0), works_sub])
+	redraw_if(nitro_bar, Vector3i(int(main.nitro * 200.0), int(main.nitro_t * 20.0), int(main.alive * 15.0) if main.nitro >= 1.0 or main.nitro_t > 0.0 else 0))
+	cockpit.visible = main.cam_mode() == 3 and not main.inside_view() # indirilen modelde aracın kendi içi görünür
 	gauge.visible = not cockpit.visible # kokpitte hız ve vites panodaki ekranda
 	if cockpit.visible:
 		cockpit.queue_redraw()
 	if timer_label.visible:
 		set_text(timer_label, "%.1f" % main.time_left)
-		timer_label.add_theme_color_override("font_color", Color(1.0, 0.3, 0.3) if main.time_left < 5.0 else Color(1, 1, 1))
+		var low: bool = main.time_left < 5.0
+		if timer_label.get_meta("low", false) != low: # tema değişince yazı yeniden şekillenir: yalnız eşikte
+			timer_label.set_meta("low", low)
+			timer_label.add_theme_color_override("font_color", Color(1.0, 0.3, 0.3) if low else Color(1, 1, 1))
 	# metni yalnız değişince ata: her atama yazıyı yeniden şekillendirir
 	set_text(fps_label, "%d FPS" % Engine.get_frames_per_second())
 	set_text(score_label, str(int(main.score)))
@@ -251,13 +271,16 @@ func update_hud() -> void:
 	if Engine.get_process_frames() % 20 == 0: # görev metni sık değişmez
 		set_text(hud_missions, hud_missions_text())
 	race_label.visible = main.race_on
-	for r in racers:
-		r.visible = main.online and main.race_on
+	for i in racers.size():
+		racers[i].visible = main.online and main.race_on and (i < 2 or main.bot_on)
 	if racers[0].visible and (Engine.get_process_frames() % 15 == 0 or racers[0].text == ""):
 		var ms := int(Net.ping_ms)
 		set_text(racers[0], "● SEN · " + Profile.car_info(Profile.car).name)
 		set_text(racers[1], "● ARKADAŞIN · %s · %d ms" % [Profile.car_info(Net.remote.car).name, ms])
 		racers[0].add_theme_color_override("font_color", Color(0.45, 0.85, 1.0))
+		if main.bot_on:
+			set_text(racers[2], "● BOT · " + Profile.car_info(Profile.CARS.map(func(c): return c.id)[Net.race_id % Profile.CARS.size()]).name)
+			racers[2].add_theme_color_override("font_color", Color(1.0, 0.8, 0.3))
 		racers[1].add_theme_color_override("font_color", Color(0.4, 1.0, 0.5) if ms < 90 else (Color(1.0, 0.85, 0.3) if ms < 180 else Color(1.0, 0.4, 0.35)))
 	if hb_btn.get_meta("on", false) != main.handbrake:
 		hb_btn.set_meta("on", main.handbrake)
@@ -265,7 +288,7 @@ func update_hud() -> void:
 		hb_btn.scale = Vector2.ONE * (0.94 if main.handbrake else 1.0)
 		hb_btn.pivot_offset = hb_btn.size * 0.5
 	var back: float = main.distance - main.rival_dist
-	rival_back.visible = main.race_on and back > 12.0 # ekranda görünmüyor: ne kadar geride kaldığı
+	rival_back.visible = main.race_on and back > 12.0 and not main.score_mode # ekranda görünmüyor: ne kadar geride kaldığı
 	if main.race_on:
 		set_text(race_label, main.race_text())
 		if rival_back.visible:
@@ -303,13 +326,39 @@ func draw_gauge() -> void:
 
 
 # Yol çalışması uyarısı; boş metin gizler, flash yaklaşınca yanıp söndürür.
-func set_works_sign(d: float, sub := "") -> void:
+func set_works_sign(d: float, sub := "", icon := "cone") -> void:
 	works_d = d
 	works_sub = sub
+	works_icon = icon
 
 
 func set_radar_sign(d: float) -> void:
 	radar_d = d
+
+
+# Kırmızı çerçeveli uyarı üçgeni; içinde kaza (çarpışmış iki araç ve parlama) ya da devrik ağaç.
+func draw_hazard_sign(cx: float, y: float, a: float) -> void:
+	signs.draw_colored_polygon(PackedVector2Array([Vector2(cx, y), Vector2(cx + 34.0, y + 60.0), Vector2(cx - 34.0, y + 60.0)]),
+		Color(0.9, 0.08, 0.08, a))
+	signs.draw_colored_polygon(PackedVector2Array([Vector2(cx, y + 12.0), Vector2(cx + 24.0, y + 54.0), Vector2(cx - 24.0, y + 54.0)]),
+		Color(1, 1, 1, a))
+	var dark := Color(0.08, 0.08, 0.1, a)
+	if works_icon == "crash":
+		for s in [-1.0, 1.0]: # iki araç burun buruna, hafif yatık
+			signs.draw_set_transform(Vector2(cx + s * 8.0, y + 44.0), -s * 0.45)
+			signs.draw_rect(Rect2(-8.0, -3.5, 16.0, 7.0), dark)
+			signs.draw_circle(Vector2(-4.5, 4.0), 2.0, dark)
+			signs.draw_circle(Vector2(4.5, 4.0), 2.0, dark)
+		signs.draw_set_transform(Vector2.ZERO)
+		var star := PackedVector2Array()
+		for k in 10: # çarpışma parlaması
+			var r := 9.0 if k % 2 == 0 else 4.0
+			star.append(Vector2(cx, y + 33.0) + Vector2.from_angle(k * TAU / 10.0 - PI / 2.0) * r)
+		signs.draw_colored_polygon(star, Color(1.0, 0.6, 0.05, a))
+	else: # devrik ağaç: yatık gövde, yere değen tepe
+		signs.draw_rect(Rect2(cx - 18.0, y + 45.0, 22.0, 5.0), Color(0.45, 0.28, 0.12, a))
+		signs.draw_colored_polygon(PackedVector2Array([Vector2(cx + 2.0, y + 36.0), Vector2(cx + 19.0, y + 47.5),
+			Vector2(cx + 2.0, y + 53.0)]), Color(0.1, 0.5, 0.15, a))
 
 
 func draw_signs() -> void:
@@ -321,15 +370,18 @@ func draw_signs() -> void:
 		var a := blink if works_d < 300.0 else 1.0 # yaklaşınca yanıp söner
 		var orange := Color(1.0, 0.45, 0.05, a)
 		var white := Color(1, 1, 1, a)
-		var tip := Vector2(cx, y + 4.0)
-		var hw := func(yy: float) -> float: return 24.0 * (yy - tip.y) / 50.0 # dubanın o yükseklikteki yarı eni
-		signs.draw_colored_polygon(PackedVector2Array([tip, Vector2(cx + 24.0, y + 54.0), Vector2(cx - 24.0, y + 54.0)]), orange)
-		for band in [[22.0, 30.0], [38.0, 46.0]]: # beyaz reflektör bantları
-			var y0: float = y + band[0]
-			var y1: float = y + band[1]
-			signs.draw_colored_polygon(PackedVector2Array([Vector2(cx - hw.call(y0), y0), Vector2(cx + hw.call(y0), y0),
-				Vector2(cx + hw.call(y1), y1), Vector2(cx - hw.call(y1), y1)]), white)
-		signs.draw_rect(Rect2(cx - 32.0, y + 54.0, 64.0, 9.0), Color(0.8, 0.3, 0.02, a))
+		if works_icon == "cone":
+			var tip := Vector2(cx, y + 4.0)
+			var hw := func(yy: float) -> float: return 24.0 * (yy - tip.y) / 50.0 # dubanın o yükseklikteki yarı eni
+			signs.draw_colored_polygon(PackedVector2Array([tip, Vector2(cx + 24.0, y + 54.0), Vector2(cx - 24.0, y + 54.0)]), orange)
+			for band in [[22.0, 30.0], [38.0, 46.0]]: # beyaz reflektör bantları
+				var y0: float = y + band[0]
+				var y1: float = y + band[1]
+				signs.draw_colored_polygon(PackedVector2Array([Vector2(cx - hw.call(y0), y0), Vector2(cx + hw.call(y0), y0),
+					Vector2(cx + hw.call(y1), y1), Vector2(cx - hw.call(y1), y1)]), white)
+			signs.draw_rect(Rect2(cx - 32.0, y + 54.0, 64.0, 9.0), Color(0.8, 0.3, 0.02, a))
+		else:
+			draw_hazard_sign(cx, y, a)
 		var t := "%d m" % int(works_d) if works_d > 0.0 else "BURADA"
 		signs.draw_string(font, Vector2(0, y + 90.0), t, HORIZONTAL_ALIGNMENT_CENTER, signs.size.x, 24, Color(1.0, 0.75, 0.2, a))
 		signs.draw_string(font, Vector2(0, y + 112.0), works_sub, HORIZONTAL_ALIGNMENT_CENTER, signs.size.x, 15, white)
@@ -337,12 +389,9 @@ func draw_signs() -> void:
 	if radar_d >= 0.0:
 		var a := blink if radar_d < 250.0 else 1.0
 		var white := Color(1, 1, 1, a)
-		var sb := StyleBoxFlat.new()
-		sb.bg_color = Color(0.05, 0.25, 0.8, a)
-		sb.set_corner_radius_all(10)
-		sb.set_border_width_all(2)
-		sb.border_color = white
-		signs.draw_style_box(sb, Rect2(cx - 32.0, y, 64.0, 56.0))
+		radar_sb.bg_color.a = a
+		radar_sb.border_color.a = a
+		signs.draw_style_box(radar_sb, Rect2(cx - 32.0, y, 64.0, 56.0))
 		signs.draw_rect(Rect2(cx - 17.0, y + 19.0, 34.0, 22.0), white, false, 3.0) # kamera gövdesi
 		signs.draw_rect(Rect2(cx - 8.0, y + 13.0, 12.0, 6.0), white)
 		signs.draw_arc(Vector2(cx, y + 30.0), 6.0, 0.0, TAU, 20, white, 3.0, true)
@@ -351,12 +400,7 @@ func draw_signs() -> void:
 		y += 130.0
 	if chase_s >= 0.0: # polis: tepe lambası kırmızı-mavi çakar, altında kalan sn
 		var on := fmod(main.alive * 3.0, 1.0) < 0.5
-		var sb := StyleBoxFlat.new()
-		sb.bg_color = Color(0.08, 0.08, 0.12)
-		sb.set_corner_radius_all(10)
-		sb.set_border_width_all(2)
-		sb.border_color = Color(1.0, 0.25, 0.25)
-		signs.draw_style_box(sb, Rect2(cx - 32.0, y, 64.0, 56.0))
+		signs.draw_style_box(chase_sb, Rect2(cx - 32.0, y, 64.0, 56.0))
 		signs.draw_rect(Rect2(cx - 22.0, y + 10.0, 21.0, 12.0), Color(1.0, 0.1, 0.1) if on else Color(0.35, 0.05, 0.05))
 		signs.draw_rect(Rect2(cx + 1.0, y + 10.0, 21.0, 12.0), Color(0.15, 0.35, 1.0) if not on else Color(0.05, 0.1, 0.35))
 		signs.draw_string(font, Vector2(0, y + 47.0), "POLİS", HORIZONTAL_ALIGNMENT_CENTER, signs.size.x, 15, Color(1, 1, 1))
@@ -622,11 +666,13 @@ func build_online() -> void:
 	button(online_box, "PAYLAŞ", 115, 540, 210, 80, share_code, false, 24)
 	button(online_box, "ARKADAŞIMIN KODUNU YAPIŞTIR", 0, 640, 440, 80, paste_code, false, 20)
 	on_start = primary(button(online_box, "YARIŞA HAZIRIM", 0, 760, 440, 100, func(): Net.set_want(not Net.want), false, 30))
-	button(online_box, "KAPAT", 0, 900, 240, 60, close_online, false, 22)
-	var note := label(online_box, 16, 985, "Kod IP adresini içerir: yalnız yarışacağın arkadaşınla paylaş.")
+	on_mode = button(online_box, "", -115, 875, 210, 60, func(): Net.set_lobby("mode", "score" if Net.lobby.mode == "race" else "race"), false, 18)
+	on_bot = button(online_box, "", 115, 875, 210, 60, func(): Net.set_lobby("bot", not Net.lobby.bot), false, 18)
+	button(online_box, "KAPAT", 0, 950, 240, 60, close_online, false, 22)
+	var note := label(online_box, 16, 1022, "Kod IP adresini içerir: yalnız yarışacağın arkadaşınla paylaş.")
 	note.add_theme_color_override("font_color", Color(1, 1, 1, 0.45))
 	for i in 2:
-		var b := primary(button(online_box, "", 0, 1030 + i * 88, 560, 76, connect_lan.bind(i), false, 21), Color(0.3, 0.85, 1.0))
+		var b := primary(button(online_box, "", 0, 1058 + i * 84, 560, 76, connect_lan.bind(i), false, 21), Color(0.3, 0.85, 1.0))
 		b.visible = false
 		on_lan.append(b)
 	Net.changed.connect(refresh_online)
@@ -651,7 +697,7 @@ func close_online() -> void:
 func refresh_online() -> void:
 	var st := Net.status
 	if Net.paired:
-		st += "\nARKADAŞIN: %s · %d ms" % [Profile.car_info(Net.remote.car).name, int(Net.ping_ms)]
+		st += "\nARKADAŞIN: %s · %d ms%s" % [Profile.car_info(Net.remote.car).name, int(Net.ping_ms), " · SUNUCU ÜZERİNDEN" if Net.via_relay else ""]
 		if Net.peer_want and not Net.want:
 			st += "\nARKADAŞIN HAZIR · SEN DE BAS"
 		elif Net.want and not Net.peer_want:
@@ -661,6 +707,11 @@ func refresh_online() -> void:
 	on_start.disabled = not Net.paired
 	on_start.modulate.a = 1.0 if Net.paired else 0.35
 	on_start.text = "BEKLENİYOR · İPTAL" if Net.want else "YARIŞA HAZIRIM"
+	var score: bool = Net.lobby.mode == "score"
+	on_mode.text = "MOD: PUAN 2 DK" if score else "MOD: YARIŞ 4 KM"
+	on_bot.text = "BOT: VAR" if Net.lobby.bot and not score else "BOT: YOK"
+	on_bot.disabled = score # puan yarışında bot yok
+	on_bot.modulate.a = 0.35 if score else 1.0
 	# ikimiz de hazırız: anahtarı küçük olan başlatır (ikisi birden başlatmasın)
 	if Net.want and Net.peer_want and Net.token < Net.peer_token and not Net.racing:
 		Net.start(Profile.road, main.region_at(main.travel))
@@ -733,7 +784,10 @@ func near_popup(text: String, color: Color) -> void:
 
 func flash() -> void:
 	flash_rect.color.a = 0.85
-	create_tween().tween_property(flash_rect, "color:a", 0.0, 0.35)
+	flash_rect.visible = true
+	var t := create_tween()
+	t.tween_property(flash_rect, "color:a", 0.0, 0.35)
+	t.tween_callback(func(): flash_rect.visible = false)
 
 
 # Kararıp açılır (yol ayrımında başka bölgeye geçiş).
@@ -762,12 +816,7 @@ func draw_cockpit() -> void:
 	cockpit.draw_colored_polygon(PackedVector2Array([Vector2(w, 0), Vector2(w, h * 0.62), Vector2(w * 0.988, h * 0.62), Vector2(w * 0.925, 0)]), dark)
 	# dikiz aynası
 	var mirror := Rect2(w * 0.33, h * 0.032, w * 0.34, h * 0.05)
-	var msb := StyleBoxFlat.new()
-	msb.bg_color = Color(0.05, 0.06, 0.09)
-	msb.set_corner_radius_all(14)
-	msb.set_border_width_all(3)
-	msb.border_color = dark
-	cockpit.draw_style_box(msb, mirror)
+	cockpit.draw_style_box(mirror_sb, mirror)
 	cockpit.draw_line(Vector2(w * 0.5, 0), Vector2(w * 0.5, h * 0.032), dark, 6.0)
 	cockpit.draw_line(mirror.position + Vector2(14, mirror.size.y * 0.35), mirror.position + Vector2(mirror.size.x * 0.6, mirror.size.y * 0.25), Color(1, 1, 1, 0.08), 3.0) # cam parıltısı
 	# pano: alçak, ortası hafif yüksek; üst kenarda ince parlama
@@ -782,12 +831,7 @@ func draw_cockpit() -> void:
 	cockpit.draw_polyline(top, edge, 2.0, true)
 	# gösterge ekranı: direksiyonun arkasında hız ve vites
 	var scr := Rect2(w * 0.38, h * 0.815, w * 0.24, h * 0.06)
-	var ssb := StyleBoxFlat.new()
-	ssb.bg_color = Color(0.02, 0.04, 0.07)
-	ssb.set_corner_radius_all(10)
-	ssb.border_color = Color(0.3, 0.7, 1.0, 0.35)
-	ssb.set_border_width_all(1)
-	cockpit.draw_style_box(ssb, scr)
+	cockpit.draw_style_box(screen_sb, scr)
 	var font := ThemeDB.fallback_font
 	cockpit.draw_string(font, scr.position + Vector2(0, scr.size.y * 0.72), "%d" % roundi(main.kmh), HORIZONTAL_ALIGNMENT_CENTER, scr.size.x * 0.7, 34, Color(0.85, 0.95, 1.0))
 	cockpit.draw_string(font, scr.position + Vector2(scr.size.x * 0.66, scr.size.y * 0.72), "%d" % main.gear, HORIZONTAL_ALIGNMENT_CENTER, scr.size.x * 0.3, 30, ACCENT)
@@ -1064,7 +1108,7 @@ func build_settings() -> void:
 	option_row(240, "SES", ["AÇIK", "KAPALI"], func(): return 0 if Profile.sound else 1, set_sound)
 	option_row(390, "TİTREŞİM", ["AÇIK", "KAPALI"], func(): return 0 if Profile.vibration else 1, set_vibration)
 	option_row(540, "GRAFİK", ["DÜŞÜK", "ORTA", "YÜKSEK"], func(): return Profile.quality, set_quality)
-	option_row(690, "FPS SINIRI", ["30", "60", "90", "120"], func(): return [30, 60, 90, 120].find(Profile.fps), set_fps)
+	option_row(690, "FPS SINIRI", ["30", "60", "90", "120", "SINIRSIZ"], func(): return [30, 60, 90, 120, 0].find(Profile.fps), set_fps)
 	var note := label(settings_box, 20, 840, "Telefon ısınıyor ya da takılıyorsa grafiği düşür, FPS'i 30 yap.\nEkranın hızından yüksek FPS bir şey kazandırmaz.")
 	note.add_theme_color_override("font_color", Color(1, 1, 1, 0.6))
 	button(settings_box, "GERİ", 0, -200, 260, 70, close_settings, true, 26)
@@ -1111,7 +1155,7 @@ func set_quality(i: int) -> void:
 
 
 func set_fps(i: int) -> void:
-	Profile.fps = [30, 60, 90, 120][i]
+	Profile.fps = [30, 60, 90, 120, 0][i] # 0: sınırsız (Engine.max_fps = 0)
 	main.auto_checking = false
 	main.apply_settings()
 
@@ -1346,7 +1390,16 @@ func open_garage() -> void:
 			g_car = i
 	g_paint = Profile.paint
 	g_rim_i = Profile.rim
+	preload_near()
 	refresh_garage()
+
+
+# Oklarla gelinecek iki komşu aracın dosyası arka planda okunur: araçlar artık istenince yükleniyor.
+func preload_near() -> void:
+	for d in [-1, 1]:
+		var id: String = Profile.CARS[wrapi(g_car + d, 0, Profile.CARS.size())].id
+		if id.begins_with("p:"):
+			main.Pack.preload_async(id.substr(2))
 
 
 func close_garage() -> void:
@@ -1381,6 +1434,15 @@ func draw_chip(b: Button, col: Color) -> void:
 
 
 # Kapsül zemin: etiketler ve sekme kutusu için.
+static func sb_box(radius: int, border: int, fill: Color, border_col: Color) -> StyleBoxFlat:
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = fill
+	sb.border_color = border_col
+	sb.set_corner_radius_all(radius)
+	sb.set_border_width_all(border)
+	return sb
+
+
 func capsule(fill: Color, border: Color) -> StyleBoxFlat:
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = fill
@@ -1401,6 +1463,7 @@ func preview() -> void:
 func pick_car(d: int) -> void:
 	g_car = wrapi(g_car + d, 0, Profile.CARS.size())
 	preview()
+	preload_near()
 	refresh_garage()
 
 

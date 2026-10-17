@@ -12,26 +12,47 @@ extends RefCounted
 const PATH := "res://cars/pack/car_pack.glb"
 # Tek araçlık modeller (cars/<ad>/<ad>.glb, CC BY; bkz. CREDITS.md). Blender'da hazırlandı: metre, üçgen sayısı
 # mobile göre azaltılmış, tekerlekler "wheel0..3", boyanan gövde "car_Body_*", lambalar "car_Optics_*".
-const SINGLES := ["e30", "doblo", "phoenix", "m4", "cop", "civic", "challenger", "gtr"]
+const SINGLES := ["e30", "doblo", "phoenix", "m4", "cop", "civic", "challenger", "gtr", "m5", "sf90"]
 const SCALE := 1.0 # sahne kökü milimetreyi zaten 0.000889 ile çarpıyor: gerçek boyun yaklaşık %89u
 # ön ucu dosyada -y'de olanlar (çeviri sonrası 180° döndürülür)
 const FLIP := ["minivan", "offroad", "coupe", "e30", "civic"]
 
 static var _cars := {} # ad -> {parts: [[mesh, xform, material]], half_w, half_l, top}
+static var _pack_loaded := false
 
 
 # Trafikte dolaşabilenler: çok parçalı ağır tek araç modelleri ve polis yalnız oyuncu/polis olarak.
 static func names() -> Array:
-	_load()
-	return _cars.keys().filter(func(n): return not n in SINGLES or n == "e30")
+	_load_pack()
+	return _cars.keys().filter(func(n): return not n in SINGLES) + ["e30"]
 
 
+# Araçlar istendiğinde yüklenir: açılışta yalnız trafiğin paketi, e30 ve polis gerekir; oyuncu araçları
+# garajda seçilince (hepsi birden yüklenince açılış uzuyor, kullanılmayan dokular bellekte kalıyordu).
 static func info(name: String) -> Dictionary:
-	_load()
+	if not _cars.has(name):
+		if name in SINGLES:
+			_load_single(name)
+		else:
+			_load_pack()
 	return _cars[name]
 
 
+# Garajda sıradaki araçların dosyası arka planda okunur, ok tuşunda beklenmesin.
+static func preload_async(name: String) -> void:
+	var path := _path(name)
+	if name in SINGLES and not _cars.has(name) \
+			and ResourceLoader.load_threaded_get_status(path) == ResourceLoader.THREAD_LOAD_INVALID_RESOURCE:
+		ResourceLoader.load_threaded_request(path)
+
+
+static func _path(name: String) -> String:
+	return "res://cars/%s/%s.glb" % [name, name]
+
+
 # Araç modeli: önü +z, tekerlekler yerde. Far ve stop lambaları gece kendi ışığıyla parlar.
+# Malzemeler çift yüzlü kalır: arka yüzü ayıklanınca camdan bakıldığında iç paneller kayboluyor, aracın içinden
+# arka plan görünüyordu (minivan, polis).
 static func build(name: String) -> Node3D:
 	var m := Node3D.new()
 	for p in info(name).parts:
@@ -53,9 +74,10 @@ static func _global(n: Node, root: Node) -> Transform3D:
 	return t
 
 
-static func _load() -> void:
-	if not _cars.is_empty():
+static func _load_pack() -> void:
+	if _pack_loaded:
 		return
+	_pack_loaded = true
 	var scn: Node = (load(PATH) as PackedScene).instantiate()
 	var bodies: Array = []
 	var wheels: Array = []
@@ -80,20 +102,26 @@ static func _load() -> void:
 				wheel_of[wm] = wi
 		_add(nm, scn, meshes, wheel_of, own.map(func(w): return _global(w, scn).origin))
 	scn.free()
-	for nm in SINGLES:
-		var one: Node = (load("res://cars/%s/%s.glb" % [nm, nm]) as PackedScene).instantiate()
-		var meshes: Array = []
-		var wheel_of := {}
-		var pts := [Vector3.ZERO, Vector3.ZERO, Vector3.ZERO, Vector3.ZERO]
-		for mi: MeshInstance3D in one.find_children("*", "MeshInstance3D", true, false):
-			if String(mi.name).begins_with("wheel"):
-				var wi := int(String(mi.name).substr(5, 1))
-				wheel_of[mi] = wi
-				pts[wi] = _global(mi, one) * mi.get_aabb().get_center()
-			meshes.append(mi)
-		meshes.sort_custom(func(x, y): return not wheel_of.has(x) and wheel_of.has(y)) # gövde önce (body_c)
-		_add(nm, one, meshes, wheel_of, pts)
-		one.free()
+
+
+static func _load_single(nm: String) -> void:
+	var path := _path(nm)
+	# arka planda okunmaya başladıysa onu bekler (yarım kalan isteği de kapatır)
+	var ps: PackedScene = ResourceLoader.load_threaded_get(path) \
+		if ResourceLoader.load_threaded_get_status(path) != ResourceLoader.THREAD_LOAD_INVALID_RESOURCE else load(path)
+	var one: Node = ps.instantiate()
+	var meshes: Array = []
+	var wheel_of := {}
+	var pts := [Vector3.ZERO, Vector3.ZERO, Vector3.ZERO, Vector3.ZERO]
+	for mi: MeshInstance3D in one.find_children("*", "MeshInstance3D", true, false):
+		if String(mi.name).begins_with("wheel"):
+			var wi := int(String(mi.name).substr(5, 1))
+			wheel_of[mi] = wi
+			pts[wi] = _global(mi, one) * mi.get_aabb().get_center()
+		meshes.append(mi)
+	meshes.sort_custom(func(x, y): return not wheel_of.has(x) and wheel_of.has(y)) # gövde önce (body_c)
+	_add(nm, one, meshes, wheel_of, pts)
+	one.free()
 
 
 # Bir aracın parçalarını önü +z, yere oturmuş ve ortalanmış olarak kaydeder. pts: dört tekerleğin merkezi.
@@ -141,12 +169,12 @@ static func _add(nm: String, scn: Node, meshes: Array, wheel_of: Dictionary, pts
 			lit.emission_energy_multiplier = 2.5
 			own_mat = lit
 		if String(mi.name).contains("_Body_") and mat is BaseMaterial3D and (mat as BaseMaterial3D).albedo_texture == null:
-			# dokusuz boya (düz renk): boya shader'ı dokudan okur, rengi küçük bir dokuya yazılır
+			# dokusuz boya (düz renk): boya shader'ı dokudan okur; doku beyaz, renk albedo_color'da kalır (oyuncu
+			# aracında base_col olur, boya parlaklığını dokudan alır)
 			var flat := (mat as BaseMaterial3D).duplicate() as BaseMaterial3D
 			var img := Image.create(4, 4, false, Image.FORMAT_RGBA8)
-			img.fill(flat.albedo_color)
+			img.fill(Color.WHITE)
 			flat.albedo_texture = ImageTexture.create_from_image(img)
-			flat.albedo_color = Color.WHITE
 			own_mat = flat
 		# tekerlek parçaları "wheel<tekerlek>_<sıra>": aynı ad iki kez verilirse Godot yeniden adlandırıyor
 		var part_name := "wheel%d_%d" % [wheel_of[mi], parts.size()] if wheel_of.has(mi) else String(mi.name)

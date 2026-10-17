@@ -8,6 +8,7 @@ extends RefCounted
 # Sahneyi koddan kurmak için ortak küçük yardımcılar (main.gd ve regions.gd kullanır).
 
 static var streak_shader: Shader = preload("res://streak.gdshader")
+static var _streaks := {} # renk + enerji -> yansıma malzemesi: aynı ışığın şeritleri tek malzemeyi paylaşır
 
 
 static func mat(color: Color, rough := 0.5, metal := 0.0, glow := 0.0) -> StandardMaterial3D:
@@ -52,11 +53,14 @@ static func beam(parent: Node3D, a: Vector3, b: Vector3, thickness: float, m: Ma
 
 # Islak yol yansıması: ışığın yerdeki izdüşümünden kameraya doğru uzanan parlak şerit.
 static func streak(parent: Node3D, at: Vector3, color: Color, width: float, length: float, energy: float) -> MeshInstance3D:
-	var m := ShaderMaterial.new()
-	m.shader = streak_shader
-	m.set_shader_parameter("color", color)
-	m.set_shader_parameter("energy", energy)
-	var mi := plane(parent, Vector2(width, length), Vector3(at.x, 0.05, at.z + length * 0.5), m)
+	var key := "%s%.2f" % [color.to_html(), energy]
+	if not _streaks.has(key):
+		var m := ShaderMaterial.new()
+		m.shader = streak_shader
+		m.set_shader_parameter("color", color)
+		m.set_shader_parameter("energy", energy)
+		_streaks[key] = m
+	var mi := plane(parent, Vector2(width, length), Vector3(at.x, 0.05, at.z + length * 0.5), _streaks[key])
 	mi.layers = 2 # yansıma kamerası yalnız 1. katmanı çizer: sahte yansıma iki kez görünmesin
 	return mi
 

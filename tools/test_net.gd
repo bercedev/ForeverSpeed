@@ -45,6 +45,18 @@ func pkt(to: Node, from: Node, m: Dictionary) -> PackedByteArray:
 	return var_to_bytes(m)
 
 
+# Yarış durumunun ikili paketi (net.send_state düzeni): etiket, anahtarlar, yol, x.
+func bin(to: Node, from: Node, d: float, x := 0.0) -> PackedByteArray:
+	var pk := PackedByteArray()
+	pk.resize(22)
+	pk[0] = 0xB5
+	pk.encode_u32(1, to._sess.hex_to_int())
+	pk.encode_u32(5, from._sess.hex_to_int())
+	pk.encode_float(9, d)
+	pk.encode_half(13, x)
+	return pk
+
+
 func _process(dt: float) -> bool:
 	t += dt
 	wait -= dt
@@ -89,7 +101,12 @@ func _process(dt: float) -> bool:
 		b._recv(pkt(b, a, {"t": "s", "d": 3999.0, "x": 1.0, "v": 900.0}), b.peer_ip, b.peer_port)
 		assert(b.remote.d <= 220.0 and b.remote.v == 600.0, "hileli yol kırpılmadı: %s" % b.remote)
 		b.remote.d = 0.0
-		a.send_state(20.0, 2.5, 200.0, false) # sınırın (30 m + hız payı) altında
+		# ikili durum paketi: yanlış anahtarlı atılır, NaN yolu bozmaz
+		b._recv(bin(a, a, 50.0), b.peer_ip, b.peer_port)
+		assert(b.remote.d == 0.0, "yanlış anahtarlı ikili paket kabul edildi")
+		b._recv(bin(b, a, NAN), b.peer_ip, b.peer_port)
+		assert(is_finite(b.remote.d) and b.remote.d == 0.0, "NaN yol kabul edildi: %s" % b.remote.d)
+		a.send_state(20.0, 2.5, 200.0, false, 0.0) # sınırın (30 m + hız payı) altında
 		b.mark_ready() # B önce yüklendi; A hazır olunca ikisinde de geri sayım
 		step = 4
 	elif step == 4 and b.remote.d == 20.0:
@@ -106,6 +123,8 @@ func _process(dt: float) -> bool:
 	elif step == 6 and wait <= 0.0:
 		assert(pauses == [true, false], "duraklatma: %s" % [pauses])
 		assert(hits == ["rear"], "çarpışma: %s" % [hits])
+		# onay gelince tekrar durur (onaysız olsaydı 3 sn boyunca gidecekti)
+		assert(a._resend.is_empty(), "onaylanan mesaj hâlâ tekrar kuyruğunda: %d" % a._resend.size())
 		a.send_final(4000.0, 0.0, 200.0, 25.5)
 		step = 7
 	elif step == 7 and b.remote.ft == 25.5:

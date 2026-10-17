@@ -3,9 +3,11 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://dr5llubces6f8"
-path="res://.godot/imported/e30_Image_4.png-0a9cd262342b1af7ab75031df2136c7b.ctex"
+path.s3tc="res://.godot/imported/e30_Image_4.png-0a9cd262342b1af7ab75031df2136c7b.s3tc.ctex"
+path.etc2="res://.godot/imported/e30_Image_4.png-0a9cd262342b1af7ab75031df2136c7b.etc2.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
+"vram_texture": true
 }
 generator_parameters={
 "md5": "fa3f581a4112ce385e543cfac1e4510c"
@@ -14,11 +16,11 @@ generator_parameters={
 [deps]
 
 source_file="res://cars/e30/e30_Image_4.png"
-dest_files=["res://.godot/imported/e30_Image_4.png-0a9cd262342b1af7ab75031df2136c7b.ctex"]
+dest_files=["res://.godot/imported/e30_Image_4.png-0a9cd262342b1af7ab75031df2136c7b.s3tc.ctex", "res://.godot/imported/e30_Image_4.png-0a9cd262342b1af7ab75031df2136c7b.etc2.ctex"]
 
 [params]
 
-compress/mode=0
+compress/mode=2
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/uastc_level=0
