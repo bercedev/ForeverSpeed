@@ -55,6 +55,8 @@ var on_status: Label
 var on_code: Label
 var on_copy: Button
 var on_start: Button
+var on_lan: Array[Button] = [] # aynı Wi-Fi'da bulunanlar (en çok iki): tek dokunuşla bağlan
+var pause_go: Button # DEVAM: arkadaş durdurduysa pasif
 
 var g_coins: Label
 var g_name: Label
@@ -432,6 +434,10 @@ func _process(dt: float) -> void:
 		g_ind.offset_right = g_ind.offset_left + 124.0
 	if pause_box.visible:
 		set_text(np_label, main.now_playing()) # parça bitip yenisi başlarsa güncel kalsın
+	if main.paused and main.warmup > 0: # online başta oyun hemen duraklar: açılış perdesi burada kalkar
+		main.warmup -= 1
+		if main.warmup == 0:
+			main.warm(false)
 	if counting: # oyun dururken de akar (bu düğüm duraklatmada da çalışır)
 		count_t -= dt
 		set_text(count_label, str(ceili(count_t)) if count_t > 0.0 else "BAŞLA!")
@@ -482,7 +488,7 @@ func build_pause() -> void:
 	count_label.add_theme_font_override("font", title_font)
 	count_label.add_theme_constant_override("outline_size", 24)
 	count_label.visible = false
-	primary(button(pause_box, "DEVAM", 0, 250, 360, 84, func(): main.set_pause(false), false, 32))
+	pause_go = primary(button(pause_box, "DEVAM", 0, 250, 360, 84, func(): main.set_pause(false), false, 32))
 	button(pause_box, "YENİDEN BAŞLA", 0, 352, 300, 62, func(): main.restart(), false, 24)
 	button(pause_box, "MENÜ", 0, 430, 300, 62, func(): main.to_menu(), false, 24)
 	label(pause_box, 24, 540, "RADYO").add_theme_color_override("font_color", Color(1.0, 0.75, 0.3))
@@ -500,6 +506,9 @@ func show_pause(on: bool) -> void:
 	pause_box.visible = on
 	pause_title.text = "ARKADAŞIN OYUNU\nDURDURDU" if main.remote_paused else "DURAKLATILDI"
 	pause_title.add_theme_font_size_override("font_size", 40 if main.remote_paused else 56)
+	pause_go.disabled = main.remote_paused # yalnız durduran devam ettirir
+	pause_go.modulate.a = 0.35 if main.remote_paused else 1.0
+	pause_go.text = "ARKADAŞIN BEKLENİYOR" if main.remote_paused else "DEVAM"
 	refresh_pause()
 
 
@@ -612,11 +621,14 @@ func build_online() -> void:
 	on_copy = button(online_box, "KOPYALA", -115, 540, 210, 80, copy_code, false, 24)
 	button(online_box, "PAYLAŞ", 115, 540, 210, 80, share_code, false, 24)
 	button(online_box, "ARKADAŞIMIN KODUNU YAPIŞTIR", 0, 640, 440, 80, paste_code, false, 20)
-	on_start = primary(button(online_box, "YARIŞI BAŞLAT", 0, 760, 440, 100,
-		func(): Net.start(Profile.road, main.region_at(main.travel)), false, 30))
+	on_start = primary(button(online_box, "YARIŞA HAZIRIM", 0, 760, 440, 100, func(): Net.set_want(not Net.want), false, 30))
 	button(online_box, "KAPAT", 0, 900, 240, 60, close_online, false, 22)
 	var note := label(online_box, 16, 985, "Kod IP adresini içerir: yalnız yarışacağın arkadaşınla paylaş.")
 	note.add_theme_color_override("font_color", Color(1, 1, 1, 0.45))
+	for i in 2:
+		var b := primary(button(online_box, "", 0, 1030 + i * 88, 560, 76, connect_lan.bind(i), false, 21), Color(0.3, 0.85, 1.0))
+		b.visible = false
+		on_lan.append(b)
 	Net.changed.connect(refresh_online)
 	Net.go.connect(on_go)
 
@@ -640,10 +652,29 @@ func refresh_online() -> void:
 	var st := Net.status
 	if Net.paired:
 		st += "\nARKADAŞIN: %s · %d ms" % [Profile.car_info(Net.remote.car).name, int(Net.ping_ms)]
+		if Net.peer_want and not Net.want:
+			st += "\nARKADAŞIN HAZIR · SEN DE BAS"
+		elif Net.want and not Net.peer_want:
+			st += "\nARKADAŞININ ONAYI BEKLENİYOR"
 	on_status.text = st
 	on_code.text = Net.code if Net.code != "" else "…"
 	on_start.disabled = not Net.paired
 	on_start.modulate.a = 1.0 if Net.paired else 0.35
+	on_start.text = "BEKLENİYOR · İPTAL" if Net.want else "YARIŞA HAZIRIM"
+	# ikimiz de hazırız: anahtarı küçük olan başlatır (ikisi birden başlatmasın)
+	if Net.want and Net.peer_want and Net.token < Net.peer_token and not Net.racing:
+		Net.start(Profile.road, main.region_at(main.travel))
+	var lp: Array = Net.lan_peers.keys()
+	for i in on_lan.size():
+		on_lan[i].visible = not Net.connected and i < lp.size()
+		if on_lan[i].visible:
+			on_lan[i].text = "AYNI WI-FI: %s %s · BAĞLAN" % [Profile.car_info(Net.lan_peers[lp[i]].car).name, Net.lan_tag(lp[i])]
+
+
+func connect_lan(i: int) -> void:
+	var lp: Array = Net.lan_peers.keys()
+	if i < lp.size():
+		Net.set_peer(lp[i])
 
 
 func copy_code() -> void:

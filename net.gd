@@ -10,14 +10,17 @@ extends Node
 # birbirine paket atarak NAT'ta delik açar (hole punching). Kod yerel ağ ve IPv6 adreslerini de taşır: aynı
 # Wi-Fi'da ve IPv6'lı mobil veride NAT'a takılmadan bağlanır. Bağlantı sahne yenilense de sürer (autoload).
 # ponytail: aktarma (TURN) sunucusu yok; iki taraf da simetrik NAT / CGNAT arkasındaysa bağlantı kurulamaz.
+# Aynı Wi-Fi: panel açıkken kod yerel ağa saniyede bir yayınlanır (LAN_PORT), arkadaş tek dokunuşla bağlanır;
+# yayın yalnız bağlanana kadar sürer (o arada aynı ağdaki herkes kodu görebilir).
 #
-# Güvenlik: kodda rastgele bir anahtar var; paket bu anahtarı taşımıyorsa, bağlanılan adresten gelmiyorsa,
-# büyükse ya da sözlük değilse atılır (nesne çözülmez). Karşının bildirdiği yol, araç hızının izin
+# Güvenlik: kodda rastgele bir anahtar var (yalnız tanışmada); bağlanınca iki taraf init ile yeni bir oturum
+# anahtarı verir ve karşıdan oturum anahtarlı ilk paket gelince kod anahtarı artık kabul edilmez (Wi-Fi'da yayınlanan
+# kodu gören araya giremez). Anahtarı tutmayan, büyük ya da sözlük olmayan paket atılır (nesne çözülmez). Karşının bildirdiği yol, araç hızının izin
 # verdiğinden hızlı artamaz. ponytail: trafik şifreli değil; kodu ele geçiren yarışa girebilir (IP de içerir).
 #
 # Mesajlar: hi (delik açma, canlı tutma), init (bağlantı kurulunca iki taraf araç bilgisini verir),
-# p/q (ping), go (yarış başlar), rdy (sahne yüklendi: ikisi de hazır olunca 3 sn sayılır), s (yarış durumu,
-# 20/sn), gh (alan aracı kayboldu), hit (çarpışma: karşı kaçırdıysa kendi payını uygular), pause/resume (duraklatma iki tarafta),
+# p/q (ping), want (yarışa hazırım: ikisi de hazırsa başlar), go (yarış başlar), rdy (sahne yüklendi: ikisi de hazır olunca 3 sn sayılır), s (yarış durumu,
+# 20/sn), bye (bağlantıyı bıraktım: karşı da kopmuş sayar), gh (alan aracı kayboldu), hit (çarpışma: karşı kaçırdıysa kendi payını uygular), pause/resume (duraklatma iki tarafta),
 # quit (yarıştan çıktı). Birkaç kez gönderilenler sıra numarası
 # taşır, kopyası atılır.
 
@@ -28,14 +31,20 @@ signal ghost(fid: int) # arkadaş trafik alanındaki bu araca çarptı, kayboldu
 signal hit(kind: String) # arkadaş çarpışma gördü: bizim payımız (front: öndeydik, rear: bindirdik, side)
 signal countdown(sec: float) # iki taraf da hazır: geri sayım (karşıdan gelen mesajla başlayan yarım ping kısa sayar)
 
-const STUN := ["stun.l.google.com", "stun1.l.google.com"]
-const STUN_PORT := 19302
+# İki ayrı sağlayıcı: NAT türü, iki farklı adrese giden paketin aynı dış portu alıp almadığıyla ölçülür
+# (Google'ın stun1..4 adları da aynı IP'ye çıkıyor, ölçüm olmuyordu).
+const STUN := [["stun.l.google.com", 19302], ["stun.cloudflare.com", 3478]]
 const MAGIC := "FS1"
 const PROTO := 1 # init'teki sürüm: farklıysa yarış başlatılamaz
 const MAX_PACKET := 512
+const LAN_PORT := 47811
 const MAX_MPS := 190.0 # karşının yolu saniyede en çok bu kadar artabilir (~680 km/sa, oyunda erişilmez)
 
 var udp := PacketPeerUDP.new()
+var lan := PacketPeerUDP.new() # aynı Wi-Fi keşfi (yayın)
+var lan_peers := {} # aynı ağda yayın yapan kod -> {"car": araç, "t": son görülme ms}
+var _lan_bcast: Array[String] = [] # yayın adresleri: genel ve her yerel ağın /24 yayını
+var _lan_t := 0.0
 var port := 0
 var token := "" # bizim anahtarımız: karşı her pakette bunu yollar
 var car := "" # bizim araç, boyası ve jantı: init'le gider, karşıda rakip modeli olur
@@ -43,14 +52,26 @@ var paint := 0
 var rim := 0
 var code := "" # bizim kod
 var status := ""
+var no_inet := false # ne dış IPv4 ne IPv6 adresi var: yalnız aynı ağ
 var hard := false # iki STUN sunucusu farklı port gördü: simetrik NAT, dışarıdan bağlanmak zor
+var peer_hard := false # arkadaşın kodu: onun NAT'ı zor (kodun 7. alanı "h")
+var _spray: Array = [] # arkadaşın NAT'ı zorsa dış adresi [ip, port]: yakın portlara da paket gider
+var _spray_i := 0 # her turda 32 port: -8..+120 aralığı 4 turda (1 sn) bir dolaşılır
 var targets: Array = [] # karşının kodundaki adresler: [ip, port]
 var peer_ip := ""
 var peer_port := 0
 var peer_token := ""
+var _sess := "" # bu bağlantının oturum anahtarları (init'le değişilir)
+var _peer_sess := ""
+var _peer_has_sess := false # arkadaş bizim oturum anahtarımızı aldı: artık onunla göndeririz
+var _sess_ok := false # arkadaştan oturum anahtarlı paket geldi: kod anahtarlısı artık atılır
+var _roam := "" # adres değişimi: yeni adresten art arda gelen paketler (geç gelen delik açma paketi adresi çevirmesin)
+var _roam_n := 0
 var connected := false
 var paired := false # iki taraf da init'i aldı: yarış başlatılabilir
 var racing := false
+var want := false # "YARIŞA HAZIRIM" dedik; yarış ikimiz de deyince başlar (kimse habersiz içeri çekilmesin)
+var peer_want := false
 var region := 0 # yarışın bölgesi (başlatanınki)
 var ping_ms := 0.0
 var remote := {"d": 0.0, "x": 0.0, "v": 0.0, "w": false, "ft": -1.0, "car": "", "paint": 0, "rim": 0, "quit": false} # karşının son durumu
@@ -58,8 +79,8 @@ var remote := {"d": 0.0, "x": 0.0, "v": 0.0, "w": false, "ft": -1.0, "car": "", 
 var silence := 0.0 # karşıdan son paketten beri geçen sn
 var peer_paused := false # arkadaş duraklattı: uygulaması arka planda olabilir, kopma süresi uzun
 var _got_init := false
-var _stun_ips := {}
-var _dns: Array[int] = [] # çözülmekte olan STUN adları (bloklamadan, IP kuyruğunda)
+var _stun_ips := {} # STUN sunucusu IP -> portu
+var _dns: Array = [] # çözülmekte olan STUN adları (bloklamadan, IP kuyruğunda): [kuyruk no, port]
 var _mapped := {} # STUN sunucusu -> onun gördüğü [ip, port]
 var _code_t := 0.0 # kod en geç 3 sn'de çıkar (STUN yanıt vermese de yerel / IPv6 adresle)
 var _t := 0.0
@@ -69,6 +90,11 @@ var _pending := {} # biz başlattık: ping'in yarısı kadar sonra başlarız, i
 var _begin_t := 0.0
 var _send_t := 0.0
 var _s_ms := 0
+var _got_state := false # bu yarışta karşıdan konum geldi (hazırlıkta gelmez)
+var _state_quiet := 0.0 # yarışta, ikimiz de oynarken konumsuz geçen süre: kopma sayılır ("hi" gelse bile)
+var _self_paused := false
+var _connect_t := 0.0 # kod yapıştırıldı: bu kadar sn içinde bağlanamazsak delik açma durur, nedeni söylenir
+var _ready_wait := 0.0 # hazırız ama arkadaş hazır değil: çok sürerse yarış iptal (siyah ekranda kalınmasın)
 var _seq := 0
 var _seen := {} # karşıdan işlenen sıra numaraları (birkaç kez gönderilenlerin kopyası atılır)
 var _seen_floor := 0 # bunun altındakiler çoktan işlendi (küme büyümesin)
@@ -90,16 +116,22 @@ func open() -> void:
 		_say("BAĞLANTI AÇILAMADI")
 		return
 	token = "%08x" % randi()
+	lan.set_broadcast_enabled(true) # Android'de çoklu yayın kilidini de alır (change_wifi_multicast_state izni)
+	if lan.bind(LAN_PORT, "0.0.0.0") != OK: # aynı cihazda ikinci oyun: yalnız yayınlar, dinleyemez
+		lan.bind(0, "0.0.0.0")
 	for h in STUN:
-		_dns.append(IP.resolve_hostname_queue_item(h, IP.TYPE_IPV4))
+		_dns.append([IP.resolve_hostname_queue_item(h[0], IP.TYPE_IPV4), h[1]])
 	_code_t = 3.0
 	_say("ADRESİN BULUNUYOR…")
 
 
 func close() -> void:
 	udp.close()
-	for id in _dns:
-		IP.erase_resolve_item(id)
+	lan.close()
+	lan_peers.clear()
+	_lan_bcast.clear()
+	for d in _dns:
+		IP.erase_resolve_item(d[0])
 	_dns.clear()
 	code = ""
 	hard = false
@@ -111,42 +143,65 @@ func close() -> void:
 	connected = false
 	paired = false
 	racing = false
+	want = false
+	peer_want = false
 	_got_init = false
 	peer_ip = ""
 	peer_token = ""
+	_sess = ""
+	_peer_sess = ""
+	_peer_has_sess = false
+	_sess_ok = false
 	remote.car = ""
 	peer_paused = false
 	_seq = 0
 	_seen.clear()
 	_seen_floor = 0
 	_rx_pause = 0
+	peer_hard = false
+	_spray = []
 	ping_ms = 0.0
 	silence = 0.0
 
 
 # Arkadaşın kodu: içindeki adreslere delik açma paketi gider. Kod geçersizse false.
 func set_peer(text: String) -> bool:
-	text = text.strip_edges()
+	# paylaşılan mesajın tamamı yapıştırılabilir ("... yarış kodum: <kod>"): kod "FS1|" ile başlar, base64'ü "RlMx"
+	var found := RegEx.create_from_string("RlMx[A-Za-z0-9+/=]+").search(text)
+	text = found.get_string() if found else text.strip_edges()
 	if text == code:
 		_say("BU SENİN KODUN · ARKADAŞININKİNİ YAPIŞTIR")
 		return false
 	var f := Marshalls.base64_to_utf8(text).split("|") if text.length() > 8 and text.length() < 400 else PackedStringArray()
-	if f.size() != 6 or f[0] != MAGIC or f[5].length() != 8:
+	if f.size() not in [6, 7] or f[0] != MAGIC or f[5].length() != 8: # 7. alan (NAT türü) eski kodlarda yok
 		_say("KOD GEÇERSİZ")
 		return false
 	if connected:
 		return true
 	targets.clear()
 	var p := int(f[4])
+	peer_hard = f.size() == 7 and f[6] == "h"
+	_spray = []
 	if f[1] != "":
 		var hp := f[1].rsplit(":", true, 1)
 		targets.append([hp[0], int(hp[1])])
+		if peer_hard:
+			_spray = [hp[0], int(hp[1])]
 	for a in f[2].split(",", false) + f[3].split(",", false):
 		targets.append([a, p])
 	targets = targets.slice(0, 6) # bizim kodumuzda en çok 6 adres: fazlası yabancı adrese paket attırmasın
 	peer_token = f[5]
-	_say("BAĞLANILIYOR… ARKADAŞIN DA SENİN KODUNU YAPIŞTIRSIN")
+	_connect_t = 10.0
+	_say("BAĞLANILIYOR… ARKADAŞIN DA SENİN KODUNU YAPIŞTIRSIN" + (" (AĞI ZOR, DENENİYOR)" if peer_hard else ""))
 	return true
+
+
+func set_want(on: bool) -> void:
+	if not paired or racing:
+		return
+	want = on
+	_reliable({"t": "want", "on": on})
+	changed.emit()
 
 
 # Yarışı başlatır: karşıya hemen, bize ping'in yarısı kadar sonra (go sinyali iki tarafta da).
@@ -188,7 +243,27 @@ func send_quit() -> void:
 
 
 func send_pause(on: bool) -> void:
+	_self_paused = on
 	_reliable({"t": "pause" if on else "resume"})
+
+
+# Bağlantı bitti. tell: karşıya "bye" (o da beklemeden kopmuş saysın; tek yönlü kopmada bizim delik açma
+# paketlerimiz onu canlı tutuyordu).
+func _drop(msg: String, tell := true) -> void:
+	if tell and peer_ip != "":
+		for i in 3:
+			_send({"t": "bye"})
+	connected = false
+	paired = false
+	racing = false
+	want = false
+	peer_want = false
+	_got_init = false
+	_peer_sess = "" # yeniden tanışma koddaki anahtarla, yeni oturum anahtarı alınır
+	_peer_has_sess = false
+	_sess_ok = false
+	_connect_t = 10.0 # elimizdeki adreslere yeniden delik açılır; olmazsa 10 sn sonra sebebi söylenir
+	_say(msg)
 
 
 # Sahne yüklendi, araçlar hazır: karşı da hazırsa geri sayım başlar.
@@ -213,18 +288,34 @@ func _process(dt: float) -> void:
 		var pk := udp.get_packet()
 		var ip := udp.get_packet_ip()
 		var prt := udp.get_packet_port()
-		if _stun_ips.has(ip) and prt == STUN_PORT:
+		if _stun_ips.get(ip, -1) == prt:
 			_stun_reply(pk, ip)
 		else:
 			_recv(pk, ip, prt)
-	for id in _dns.duplicate():
-		var st := IP.get_resolve_item_status(id)
+	for d in _dns.duplicate():
+		var st := IP.get_resolve_item_status(d[0])
 		if st == IP.RESOLVER_STATUS_WAITING:
 			continue
-		if st == IP.RESOLVER_STATUS_DONE and IP.get_resolve_item_address(id) != "":
-			_stun_ips[IP.get_resolve_item_address(id)] = true
-		IP.erase_resolve_item(id)
-		_dns.erase(id)
+		if st == IP.RESOLVER_STATUS_DONE and IP.get_resolve_item_address(d[0]) != "":
+			_stun_ips[IP.get_resolve_item_address(d[0])] = d[1]
+		IP.erase_resolve_item(d[0])
+		_dns.erase(d)
+	n = 0
+	while lan.get_available_packet_count() > 0 and n < 64:
+		n += 1
+		_lan_recv(lan.get_packet())
+	_lan_t -= dt
+	if _lan_t <= 0.0:
+		_lan_t = 1.0
+		if code != "" and not connected:
+			var pk := var_to_bytes({"fs": 1, "t": "lan", "code": code, "car": car})
+			for ip in _lan_bcast:
+				lan.set_dest_address(ip, LAN_PORT)
+				lan.put_packet(pk)
+		for k in lan_peers.keys(): # 4 sn duyulmayan ağdan çıkmıştır
+			if Time.get_ticks_msec() - lan_peers[k].t > 4000:
+				lan_peers.erase(k)
+				changed.emit()
 	_send_t -= dt
 	if code == "":
 		_code_t -= dt
@@ -235,14 +326,33 @@ func _process(dt: float) -> void:
 		if _begin_t <= 0.0:
 			_begin(_pending.road, _pending.rg, _pending.rid)
 			_pending = {}
+	if not connected and not targets.is_empty():
+		_connect_t -= dt
+		if _connect_t <= 0.0:
+			targets.clear()
+			_spray = []
+			if no_inet:
+				_say("BAĞLANAMADI · İNTERNET ADRESİN BULUNAMADI, AYNI WI-FI'DA DENEYİN")
+			elif hard and peer_hard:
+				_say("BAĞLANAMADI · İKİNİZİN AĞI DA DIŞARIDAN BAĞLANTIYA KAPALI, BİRİNİZ BAŞKA AĞ DENESİN")
+			elif hard:
+				_say("BAĞLANAMADI · SENİN AĞIN DIŞARIDAN BAĞLANTIYA KAPALI, BAŞKA AĞ DENE")
+			elif peer_hard:
+				_say("BAĞLANAMADI · ARKADAŞININ AĞI DIŞARIDAN BAĞLANTIYA KAPALI, O BAŞKA AĞ DENESİN")
+			else:
+				_say("BAĞLANAMADI · İKİNİZ DE BİRBİRİNİZİN KODUNU YAPIŞTIRIN, SONRA TEKRAR DENEYİN")
 	if connected:
 		silence += dt
 		if silence > (30.0 if peer_paused else 5.0):
-			connected = false
-			paired = false
-			racing = false
-			_got_init = false
-			_say("BAĞLANTI KOPTU · KODLARI YENİDEN DEĞİŞİN")
+			_drop("BAĞLANTI KOPTU · KODLARI YENİDEN DEĞİŞİN")
+		elif racing and _got_state and not peer_paused and not _self_paused:
+			_state_quiet += dt
+			if _state_quiet > 5.0:
+				_drop("BAĞLANTI KOPTU")
+		if racing and _me_ready and not _counted:
+			_ready_wait += dt
+			if _ready_wait > 15.0:
+				_drop("ARKADAŞIN OYUNU AÇILMADI")
 		_ping_t -= dt
 		if _ping_t <= 0.0:
 			_ping_t = 1.0
@@ -253,7 +363,7 @@ func _process(dt: float) -> void:
 	_t = 0.25
 	if code == "": # yanıt gelene kadar tekrar sor
 		for ip in _stun_ips:
-			udp.set_dest_address(ip, STUN_PORT)
+			udp.set_dest_address(ip, _stun_ips[ip])
 			udp.put_packet(_stun_request())
 	for r in _resend:
 		_send(r[0])
@@ -262,6 +372,14 @@ func _process(dt: float) -> void:
 	if not connected:
 		for t in targets: # delik açma: karşı da bize atınca iki NAT'ta da yol açılır
 			_send({"t": "hi"}, t[0], t[1])
+		# arkadaşın NAT'ı her hedefe yeni port açıyor: bize açacağı port kodundakinin (en son gördüğü) biraz
+		# ilerisinde olur, çoğu modem portları sırayla verir (kod gittikten sonra evdeki başka cihazlar da sayacı ilerletir)
+		if not _spray.is_empty() and not hard: # biz de zorsak her paket modemde yeni port açar, tahmini bozar
+			for k in 32:
+				var pp: int = _spray[1] - 8 + (_spray_i * 32 + k) % 128
+				if pp != _spray[1] and pp > 1024 and pp < 65536:
+					_send({"t": "hi"}, _spray[0], pp)
+			_spray_i += 1
 	elif not _got_init:
 		_send_init()
 	else:
@@ -271,8 +389,9 @@ func _process(dt: float) -> void:
 func _send(m: Dictionary, ip := peer_ip, prt := peer_port) -> void:
 	var out := m.duplicate()
 	out["fs"] = 1
-	out["k"] = peer_token # karşının anahtarı: onu bilmeyen paketi atılır
-	out["me"] = token
+	var sess := _peer_has_sess and _peer_sess != ""
+	out["k"] = _peer_sess if sess else peer_token # karşının anahtarı: onu bilmeyen paketi atılır
+	out["me"] = _sess if sess else token
 	udp.set_dest_address(ip, prt)
 	udp.put_packet(var_to_bytes(out))
 
@@ -285,29 +404,51 @@ func _reliable(m: Dictionary) -> void:
 
 
 func _send_init() -> void:
-	_send({"t": "init", "v": PROTO, "car": car, "paint": paint, "rim": rim, "got": _got_init})
+	_send({"t": "init", "v": PROTO, "car": car, "paint": paint, "rim": rim, "sk": _sess, "got": _got_init})
 
 
 func _recv(pk: PackedByteArray, ip: String, prt: int) -> void:
 	if pk.size() < 8 or pk.size() > MAX_PACKET or (pk.decode_u32(0) & 0xFF) != TYPE_DICTIONARY:
 		return
 	var m = bytes_to_var(pk) # nesne çözülmez (bytes_to_var_with_objects değil)
-	if not (m is Dictionary) or m.get("fs") != 1 or m.get("k") != token or not (m.get("me") is String):
+	if not (m is Dictionary) or m.get("fs") != 1 or not (m.get("k") is String) or not (m.get("me") is String):
 		return
+	var k: String = m.k
 	var me: String = m.me
+	var by_sess := connected and _sess != "" and _peer_sess != "" and k == _sess and me == _peer_sess
+	var by_code := k == token and not _sess_ok and (me == peer_token if connected \
+		else me.length() == 8 and (peer_token == "" or me == peer_token)) # kodunu yapıştırdığımız kişi
+	if not (by_sess or by_code):
+		return
+	if by_sess:
+		_sess_ok = true
+		_peer_has_sess = true # bizim oturum anahtarımızla geldi: onu almış
 	if connected:
-		if ip != peer_ip or prt != peer_port or me != peer_token:
-			return
+		var from := "%s|%d" % [ip, prt]
+		if ip == peer_ip and prt == peer_port:
+			_roam_n = 0
+		else: # adres değişti (NAT eşlemesi, IPv6 gizlilik adresi): art arda 3 paket gelirse geçilir
+			_roam_n = _roam_n + 1 if from == _roam else 1
+			_roam = from
+			if _roam_n >= 3:
+				peer_ip = ip
+				peer_port = prt
+				_roam_n = 0
 	else:
-		if me.length() != 8 or (peer_token != "" and me != peer_token): # kodunu yapıştırdığımız kişi değil
-			return
 		connected = true
 		peer_ip = ip
 		peer_port = prt
 		peer_token = me
+		_sess = "%08x" % randi()
+		_peer_sess = ""
+		_peer_has_sess = false
+		_sess_ok = false
+		_roam_n = 0
 		# yeniden bağlanma: init yeniden alışılır; arkadaş uygulamayı yeniden açtıysa sıra numaraları sıfırdan
 		_got_init = false
 		paired = false
+		want = false
+		peer_want = false
 		_seen.clear()
 		_seen_floor = 0
 		_rx_pause = 0
@@ -330,6 +471,11 @@ func _recv(pk: PackedByteArray, ip: String, prt: int) -> void:
 			_rx_pause = seq
 	match m.get("t"):
 		"init":
+			var sk := str(m.get("sk", ""))
+			if sk.length() == 8:
+				_peer_sess = sk
+			if m.get("got") == true:
+				_peer_has_sess = true # bizim init'imizi (oturum anahtarımızı) almış
 			if not _got_init:
 				_got_init = true
 				remote.car = str(m.get("car", "")).left(32)
@@ -348,13 +494,21 @@ func _recv(pk: PackedByteArray, ip: String, prt: int) -> void:
 				changed.emit()
 		"go":
 			# ikimiz aynı anda bastıysak anahtarı küçük olanınki geçer
-			if paired and not racing and (_pending.is_empty() or me < token):
+			if paired and not racing and (_pending.is_empty() or peer_token < token):
 				_pending = {}
 				_begin(str(m.get("road", "two")), int(_num(m, "rg")), int(_num(m, "rid")))
 		"rdy":
 			_peer_rid = int(_num(m, "rid")) # go'dan önce gelebilir (sıra karışırsa): saklanır
 			_check_ready(true)
+		"want":
+			peer_want = m.get("on") == true
+			changed.emit()
+		"bye":
+			_drop("ARKADAŞIN BAĞLANTISI KOPTU", false)
+			return
 		"s":
+			_got_state = true
+			_state_quiet = 0.0
 			var now := Time.get_ticks_msec()
 			# geçen süre 1 sn'yle sınırlı: duraklatmada s gitmez, birikmiş süre büyük bir sıçramaya izin vermesin
 			var lim: float = remote.d + MAX_MPS * minf(now - _s_ms, 1000.0) / 1000.0 + 30.0
@@ -380,6 +534,31 @@ func _recv(pk: PackedByteArray, ip: String, prt: int) -> void:
 				remote_pause.emit(peer_paused)
 
 
+# Düğmede ayırt etmek için: kodun ilk yerel ağ adresinin son hanesi ("(.85)"); araç adları aynı olabilir.
+func lan_tag(c: String) -> String:
+	var f := Marshalls.base64_to_utf8(c).split("|")
+	if f.size() == 6 and f[2] != "":
+		return "(.%s)" % f[2].split(",")[0].get_slice(".", 3)
+	return ""
+
+
+func _lan_recv(pk: PackedByteArray) -> void:
+	if pk.size() < 8 or pk.size() > MAX_PACKET or (pk.decode_u32(0) & 0xFF) != TYPE_DICTIONARY:
+		return
+	var m = bytes_to_var(pk)
+	if not (m is Dictionary) or m.get("fs") != 1 or m.get("t") != "lan" or not (m.get("code") is String):
+		return
+	var c: String = m.code
+	if c == code or c.length() > 400:
+		return
+	var fresh := not lan_peers.has(c)
+	lan_peers[c] = {"car": str(m.get("car", "")).left(32), "t": Time.get_ticks_msec()}
+	if fresh:
+		if OS.is_debug_build():
+			print("[lan] bulundu: ", lan_peers[c].car)
+		changed.emit()
+
+
 func _num(m: Dictionary, k: String) -> float:
 	var v = m.get(k, 0.0)
 	return float(v) if v is float or v is int else 0.0
@@ -388,8 +567,14 @@ func _num(m: Dictionary, k: String) -> float:
 func _begin(road: String, rg: int, rid: int) -> void:
 	racing = true
 	race_id = rid
+	want = false
+	peer_want = false
 	_me_ready = false
 	_counted = false
+	_got_state = false
+	_state_quiet = 0.0
+	_self_paused = false
+	_ready_wait = 0.0
 	region = clampi(rg, 0, 3)
 	remote.d = 0.0
 	remote.v = 0.0
@@ -403,8 +588,10 @@ func _begin(road: String, rg: int, rid: int) -> void:
 
 func _make_code() -> void:
 	var seen: Array = _mapped.values()
-	var pub := "%s:%d" % seen[0] if not seen.is_empty() else ""
-	var lan := PackedStringArray()
+	var pub := ""
+	if not seen.is_empty(): # zor NAT'ta en büyük port: bir sonraki hedefe verilecek olan onun hemen ardından
+		pub = "%s:%d" % [seen[0][0], seen.map(func(m): return m[1]).max()]
+	var lans := PackedStringArray()
 	var v6 := PackedStringArray()
 	for a in IP.get_local_addresses():
 		var o := a.split(".")
@@ -412,15 +599,22 @@ func _make_code() -> void:
 			if (a.begins_with("2") or a.begins_with("3")) and not a.contains("%"): # yalnız internet adresi (2000::/3)
 				v6.append(a)
 		elif o[0] == "10" or (o[0] == "192" and o[1] == "168") or (o[0] == "172" and int(o[1]) >= 16 and int(o[1]) <= 31):
-			lan.append(a)
-	code = Marshalls.utf8_to_base64("%s|%s|%s|%s|%d|%s" % [MAGIC, pub, ",".join(lan.slice(0, 3)), ",".join(v6.slice(0, 2)), port, token])
+			lans.append(a)
+	_lan_bcast.assign(["255.255.255.255"])
+	for a in lans:
+		var o := a.split(".")
+		if o[0] == "192" and o[1] == "168": # ev ağları /24; başka maskeli ağda a.b.c.255 sıradan bir cihaz olabilir
+			_lan_bcast.append("%s.%s.%s.255" % [o[0], o[1], o[2]])
 	hard = seen.size() >= 2 and seen[0][1] != seen[1][1]
+	var nat := "h" if hard else ("e" if seen.size() >= 2 else "?") # NAT türü: zor / kolay / bilinmiyor
+	code = Marshalls.utf8_to_base64("%s|%s|%s|%s|%d|%s|%s" % [MAGIC, pub, ",".join(lans.slice(0, 3)), ",".join(v6.slice(0, 2)), port, token, nat])
 	if OS.is_debug_build():
-		print("[net] kod ", code, " ", Marshalls.base64_to_utf8(code))
-	if pub == "" and v6.is_empty():
+		print("[net] kod ", code, " ", Marshalls.base64_to_utf8(code), " stun: ", seen)
+	no_inet = pub == "" and v6.is_empty()
+	if no_inet:
 		_say("İNTERNET ADRESİ BULUNAMADI · YALNIZ AYNI WI-FI")
 	elif hard:
-		_say("KODUNU ARKADAŞINA GÖNDER · AĞIN ZOR, OLMAZSA WI-FI DENE")
+		_say("KODUNU ARKADAŞINA GÖNDER · AĞIN ZOR, BAĞLANTI UZUN SÜREBİLİR")
 	else:
 		_say("KODUNU ARKADAŞINA GÖNDER, ONUNKİNİ YAPIŞTIR")
 

@@ -81,7 +81,7 @@ const ROAD_HALF := 6.1 # arabanın merkezinin gidebileceği en uç x (bariyerin 
 const DRAG_GAIN := 0.022 # parmak 1 px kayınca araba bu kadar metre yana gider (720 px genişlikte)
 const KEY_STEER := 9.0 # klavyede yana kayma hızı (m/sn)
 const MAX_BUMPS := 3 # bir oyunda bu kadar hafif çarpma kaza sayılır: köşe sıyırarak trafiği yarmak bedava olmasın
-const NEAR_GAP := 1.1 # yakın geçiş: yan boşluk bundan azsa sayılır (m)
+const NEAR_GAP := 1.5 # yakın geçiş: yan boşluk bundan azsa sayılır (m); komşu şeridin tam ortası (~1,9) sayılmaz
 const HEAVY_KMH := 50.0 # tam arkadan bu hız farkıyla bindirmek kaza; sıyırma ya da yavaş temas uyarı
 # Yol çalışması: çok önceden uyarılır, sonra bir şerit konilerle daralıp bariyerle kapanır.
 const WORK_LEN := 320.0
@@ -191,6 +191,7 @@ var finished := false # yarış bitti: kaza değil, araba dönmesin
 var rival: Node3D
 var rival_kmh := 0.0
 var rival_dist := 0.0 # rakibin yarışta aldığı yol
+var rival_rel := 0.0 # rakibin bize göre z farkı (+ arkada): yanından geçişi yakalamak için
 var rival_lane := 3
 var rival_nitro_t := 0.0
 var rival_nitro_cd := 8.0
@@ -427,12 +428,17 @@ func _ready() -> void:
 				incident_at = travel + 19.0
 			elif arg == "online" and not Net.racing:
 				ui.open_online()
-			elif arg.begins_with("online=") and not Net.racing: # test: arkadaşın kodu; online=KOD:go bağlanınca yarışı kendisi başlatır
+			elif arg.begins_with("online=") and not Net.racing: # test: arkadaşın kodu (ya da "lan": aynı ağda ilk bulunan); :go bağlanınca başlatır
 				var ov := arg.substr(7).split(":")
 				ui.open_online()
-				Net.set_peer(ov[0])
+				if ov[0] == "lan":
+					Net.changed.connect(func(): if not Net.connected and Net.targets.is_empty() and not Net.lan_peers.is_empty(): Net.set_peer(Net.lan_peers.keys()[0]))
+				else:
+					Net.set_peer(ov[0])
 				if ov.size() > 1 and ov[1] == "go":
-					Net.changed.connect(func(): if Net.paired and not Net.racing and state == "menu": Net.start(Profile.road, region_at(travel)))
+					Net.changed.connect(func(): if Net.paired and not Net.want and not Net.racing and state == "menu": Net.set_want(true))
+			elif arg == "want" and not Net.racing: # test: bağlanınca "yarışa hazırım" der
+				Net.changed.connect(func(): if Net.paired and not Net.want and not Net.racing and state == "menu": Net.set_want(true))
 			elif arg == "garage":
 				ui.open_garage()
 			elif arg.begins_with("curve="):
@@ -913,6 +919,8 @@ func set_pause(on: bool, quiet := false) -> void:
 	if online and race_on and not quiet:
 		if ui.count_label.visible: # hazırlanırken ya da sayarken: geri tuşu eşitlemeyi atlatmasın
 			return
+		if not on and remote_paused: # arkadaş durdurduysa yalnız o devam ettirebilir
+			return
 		# online: duraklatma iki tarafta; devam 3 sn geri sayımla, dur-başlatla rakip geciktirilemesin
 		Net.send_pause(on)
 		if not on:
@@ -1235,8 +1243,19 @@ func update_traffic(step: float, dt: float) -> void:
 	update_steady(dt)
 
 
+# Şerit çizgisinin üstündeyken iki yandaki araca da değilir: dar çarpışma kutusuyla dört şeritte tam çizgi üstü
+# hiçbir araca değmeden gidilen bir koridordu.
 func touching(c: Node3D) -> bool:
-	return absf(c.position.z - car.position.z) < len_gap(c) and absf(c.position.x - car.position.x) < side_gap(c)
+	var dx := absf(c.position.x - car.position.x)
+	return absf(c.position.z - car.position.z) < len_gap(c) and (dx < side_gap(c) or (on_line() and dx < 2.0))
+
+
+# Şerit ortasından 1,1 m'den uzak: iki şeridin arasında, çizgi üstünde.
+func on_line() -> bool:
+	var nearest := 9.0
+	for l in LANES:
+		nearest = minf(nearest, absf(car.position.x - l))
+	return nearest > 1.1
 
 
 # Önden-arkadan değmeden durabileceği en küçük merkez aralığı (kamyonlar uzun).
@@ -1246,8 +1265,8 @@ func len_gap(c: Node3D) -> float:
 
 # İki aracın yanlardan değmeden durabileceği en küçük merkez aralığı: yarım genişlikler toplamı.
 func side_gap(c: Node3D) -> float:
-	# çarpışma kutusu biraz dar: yan yana iki aracın arasından sıyrılarak geçilebilir. Çizgi üstünde gidip kombo
-	# kasılmasın diye near_miss çizgi üstünde bonus vermez, update_steady sabit gidene polis gönderir.
+	# çarpışma kutusu biraz dar (yandan sıyırmak affedilir); çizgi üstünde touching iki yanı da sayar, near_miss
+	# çizgi üstünde bonus vermez, update_steady sabit gidene polis gönderir.
 	return (c.get_meta("half_w", 0.95) + car.get_meta("half_w", 0.95)) * 0.86
 
 
@@ -1294,10 +1313,7 @@ func near_miss(c: Node3D) -> void:
 	if kmh < NEAR_MIN_KMH or gap > NEAR_GAP:
 		return
 	var head_on: bool = c.get_meta("dir") < 0
-	var nearest := 9.0
-	for l in LANES:
-		nearest = minf(nearest, absf(car.position.x - l))
-	if nearest > 1.1: # şerit çizgisinin üstünde: yakın geçme sayılmaz
+	if on_line(): # şerit çizgisinin üstünde: yakın geçme sayılmaz
 		return
 	combo = mini(combo + 1, 10)
 	combo_t = COMBO_WINDOW
@@ -2658,6 +2674,8 @@ func start_race() -> void:
 		target_x = LANES[mine]
 		rival_lane = 5 - mine
 	rival.position = Vector3(LANES[rival_lane], 0, car.position.z)
+	rival.set_meta("dir", 1) # near_miss için: bizim yönde giden araç
+	rival_rel = 0.0
 	rival.visible = true
 	if finish == null:
 		finish = build_finish()
@@ -2722,6 +2740,7 @@ func update_race(dt: float) -> void:
 	rival.position.z = car.position.z - gap
 	steer(rival, LANES[rival_lane], dt, 4.5)
 	keep_on_road(rival)
+	rival_pass()
 	rival.rotation.y += sin(alive * 18.0) * 0.12 * clampf(rival_stun, 0.0, 1.0) # vurulunca yalpalar
 	# trafiğe değerse onu savurur, kendisi yavaşlar
 	for c in traffic:
@@ -2787,6 +2806,7 @@ func update_online(dt: float) -> void:
 	rival.position.z = car.position.z - (rival_dist - distance)
 	steer(rival, Net.remote.x, dt, 8.0)
 	keep_on_road(rival)
+	rival_pass()
 	rival.visible = not Net.remote.w or fmod(alive, 0.2) < 0.1 # kazadaki arkadaş yanıp söner
 	Net.send_state(distance, car.position.x, kmh, race_blink > 0.0)
 	# çarpışma: iki taraf da kendi aracına uygular, karşı kaçırırsa diye payını ona bildirir
@@ -2809,6 +2829,15 @@ func update_online(dt: float) -> void:
 		race_result(false)
 	elif my_ft >= 0.0 and (rival_ft >= 0.0 or ft_wait <= 0.0):
 		race_result(true)
+
+
+# Rakibi (online'da arkadaşı) yakından geçmek de trafikteki gibi yakın geçiş: puan, kombo, nitro. Değerek
+# geçmek sayılmaz, o çarpışma.
+func rival_pass() -> void:
+	var rel := rival.position.z - car.position.z # + arkada
+	if rival_rel < 0.0 and rel >= 0.0 and state == "play" and absf(rival.position.x - car.position.x) >= side_gap(rival):
+		near_miss(rival)
+	rival_rel = rel
 
 
 # Online çarpışmada bizim payımız. front: öndeydik, arkadan vuruldu; rear: biz bindirdik; side: sürtüştük.
