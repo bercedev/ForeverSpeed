@@ -24,4 +24,17 @@ The third-party assets below keep their own licenses.
 - Roadside wreck "Destroyed Car 07 (Raw Scan)" by Renafox
   (https://sketchfab.com/3d-models/destroyed-car-07-raw-scan-916b51c7e5644eb2a6c9b3797ebb08cf), CC BY 4.0.
   File: `cars/wreck/wreck.glb`, decimated from 2.5M to 7k triangles with a 1k texture.
+- Single-car models, all CC BY 4.0 from Sketchfab, prepared with `tools/prep_car.py` (metres, wheels
+  regrouped, triangles reduced for mobile):
+  "Low Poly Car - BMW E30 1985 White" by ROH3D
+  (https://sketchfab.com/3d-models/low-poly-car-bmw-e30-1985-white-9dea494b447e442fafbddfc7eccbf158), `cars/e30/`;
+  "Phoenix 455 '71 - Low poly model" by Daniel Zhabotinsky
+  (https://sketchfab.com/3d-models/phoenix-455-71-low-poly-model-955edc733c6d44fabc0ad7c246a15896), `cars/phoenix/`;
+  "Fairheaven LT '80 Cop Cruiser - Low poly model" by Daniel Zhabotinsky
+  (https://sketchfab.com/3d-models/fairheaven-lt-80-cop-cruiser-low-poly-model-61766c1e6e1e4b2b803c174f33433a74), `cars/cop/`;
+  "Fiat Doblo MK1 2000-2021" by Merc_TV
+  (https://sketchfab.com/3d-models/fiat-doblo-mk1-2000-2021-11103d960278407b9e612907d26fc63c), `cars/doblo/`,
+  spare wheel copied to the four wheel arches and untextured materials recoloured;
+  "BMW M4csl" by Mpgs.studio3DModels
+  (https://sketchfab.com/3d-models/bmw-m4csl-b53782a00cc240a191d5d7d005af1423), `cars/m4/`, reduced from 980k to 45k triangles.
 - App icon (`icon.png`): generated for this project with OpenAI image generation via Codex CLI.

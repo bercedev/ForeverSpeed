@@ -10,6 +10,7 @@ render_mode cull_disabled;
 // tail_uv stop lambası rengi, kendi ışığıyla parlar; paint_uv gövde boyası, garajda seçilen renge boyanır.
 // R34: dokunun üst şeridi renk kareleri, v > body_v gövde. Kenney: body_v = 0, hepsi boya sayılır.
 uniform sampler2D albedo_tex : source_color;
+uniform vec3 base_col : source_color = vec3(1.0); // malzemenin kendi rengi (doku bununla çarpılır)
 uniform float tail_energy = 4.0;
 uniform vec4 tail_uv = vec4(0.75, 0.0, 0.875, 0.125);
 uniform float body_v = 0.125;
@@ -59,7 +60,7 @@ float inside(vec2 uv, vec4 r) {
 }
 
 void fragment() {
-	vec3 c = texture(albedo_tex, UV).rgb;
+	vec3 c = texture(albedo_tex, UV).rgb * base_col;
 	float body = step(body_v, UV.y);
 	// boyada orijinal tonun parlaklığı korunur, renk değişir
 	float pm = inside(UV, paint_uv) * use_paint;

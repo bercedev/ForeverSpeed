@@ -11,19 +11,21 @@ const PATH := "user://save.cfg"
 # İsimlerde marka yok: mağazada sorun çıkarmasın.
 # top: tavan hıza eklenen km/sa, accel: ivme çarpanı
 const CARS := [
-	{"id": "r34", "name": "MIDNIGHT GT", "price": 0, "top": 0.0, "accel": 0.85},
-	{"id": "p:compact", "name": "CITY HOPPER", "price": 800, "top": -5.0, "accel": 0.8},
-	{"id": "taxi", "name": "NIGHT CAB", "price": 1200, "top": 0.0, "accel": 0.85},
-	{"id": "sedan-sports", "name": "STREET SEDAN", "price": 1500, "top": 5.0, "accel": 0.9},
-	{"id": "hatchback-sports", "name": "HOT HATCH", "price": 2500, "top": 5.0, "accel": 1.0},
-	{"id": "p:coupe", "name": "COUPE GT", "price": 3000, "top": 12.0, "accel": 1.05},
-	{"id": "suv-luxury", "name": "BLACK SUV", "price": 3500, "top": 10.0, "accel": 1.0},
-	{"id": "p:suv", "name": "BIG SUV", "price": 4000, "top": 8.0, "accel": 0.95},
-	{"id": "race", "name": "RACER", "price": 5000, "top": 18.0, "accel": 1.15},
-	{"id": "police", "name": "INTERCEPTOR", "price": 6500, "top": 24.0, "accel": 1.2},
-	{"id": "p:sport", "name": "SPORT X", "price": 7500, "top": 28.0, "accel": 1.25},
-	{"id": "race-future", "name": "FUTURE", "price": 9000, "top": 32.0, "accel": 1.3},
+	{"id": "p:e30", "name": "E30 KLASİK", "price": 0, "top": -2.0, "accel": 0.8},
+	{"id": "p:doblo", "name": "DOBLO", "price": 1020, "top": -10.0, "accel": 0.72},
+	{"id": "p:compact", "name": "CITY HOPPER", "price": 1360, "top": -5.0, "accel": 0.8},
+	{"id": "r34", "name": "MIDNIGHT GT", "price": 3400, "top": 4.0, "accel": 0.9},
+	{"id": "p:coupe", "name": "COUPE GT", "price": 5100, "top": 12.0, "accel": 1.05},
+	{"id": "p:suv", "name": "BIG SUV", "price": 6800, "top": 8.0, "accel": 0.95},
+	{"id": "p:phoenix", "name": "PHOENIX 455", "price": 7650, "top": 16.0, "accel": 1.1},
+	{"id": "race", "name": "RACER", "price": 8500, "top": 18.0, "accel": 1.15},
+	{"id": "police", "name": "INTERCEPTOR", "price": 11050, "top": 24.0, "accel": 1.2},
+	{"id": "p:sport", "name": "SPORT X", "price": 12750, "top": 28.0, "accel": 1.25},
+	{"id": "p:m4", "name": "M4 CSL", "price": 14450, "top": 30.0, "accel": 1.3},
+	{"id": "race-future", "name": "FUTURE", "price": 15300, "top": 32.0, "accel": 1.3},
 ]
+# Listeden çıkan eski (Kenney) araçlar: sahibine fiyatı geri verilir.
+const RETIRED := {"taxi": 1200, "sedan-sports": 1500, "hatchback-sports": 2500, "suv-luxury": 3500}
 # Araç başına geliştirme: [ad, ilk seviye fiyatı]. Fiyat seviyeyle artar, en çok MAX_LEVEL.
 const UPGRADES := {
 	"speed": ["HIZ", 400],
@@ -64,18 +66,18 @@ const PAINTS := [
 	["KAPLAN", Color(0.95, 0.5, 0.05), 1800, 13, Color(0.03, 0.03, 0.03)],
 	["NEON DEVRE", Color(0.03, 0.03, 0.04), 2600, 14, Color(0.1, 0.95, 1.0)],
 ]
-# Jant: [ad, model (0 aracın kendi jantı, 1 spor, 2 derin, 3 klasik), renk, kaplama, fiyat].
-# Kaplama rim.gdshader'daki rim_fin: 0 orijinal, 1 krom, 2 mat, 3 metalik, 4 neon.
+# Jant: [ad, desen, renk, kaplama, fiyat]. Desen 0 aracın kendi tekerleği; 1 beş kol, 2 on ince kol,
+# 3 örgü, 4 çift kol, 5 altı kol derin çanak (main.rim_mesh). Kaplama: 1 krom, 2 mat, 3 metalik, 4 neon.
 const RIMS := [
 	["ORİJİNAL", 0, Color(1, 1, 1), 0, 0],
-	["KROM", 0, Color(0.85, 0.87, 0.9), 1, 500],
-	["MAT SİYAH", 0, Color(0.06, 0.06, 0.07), 2, 500],
-	["ALTIN", 0, Color(1.0, 0.75, 0.25), 3, 800],
-	["SPOR", 1, Color(0.8, 0.82, 0.86), 3, 900],
+	["KROM", 1, Color(0.85, 0.87, 0.9), 1, 500],
+	["MAT SİYAH", 2, Color(0.06, 0.06, 0.07), 2, 500],
+	["ALTIN", 3, Color(1.0, 0.75, 0.25), 3, 800],
+	["SPOR", 4, Color(0.8, 0.82, 0.86), 3, 900],
 	["SPOR KIRMIZI", 1, Color(0.85, 0.08, 0.08), 3, 1100],
-	["KLASİK BEYAZ", 3, Color(0.92, 0.92, 0.94), 3, 900],
-	["DERİN SİYAH", 2, Color(0.08, 0.08, 0.09), 1, 1000],
-	["NEON MAVİ", 1, Color(0.1, 0.8, 1.0), 4, 1600],
+	["KLASİK BEYAZ", 5, Color(0.92, 0.92, 0.94), 3, 900],
+	["DERİN SİYAH", 5, Color(0.08, 0.08, 0.09), 1, 1000],
+	["NEON MAVİ", 2, Color(0.1, 0.8, 1.0), 4, 1600],
 ]
 # Araç başına modifiye: [ad, fiyat, seçenekler]. Alınınca seçenekler arasında gezilir (ilk seçenek kapalı).
 const MODS := {
@@ -100,9 +102,9 @@ const MAX_TYPES := ["run_km", "combo"] # bunlarda ilerleme toplanmaz, en iyi de�
 
 var coins := 0
 var best := 0
-var cars: Array = ["r34"]
+var cars: Array = ["p:e30"]
 var paints: Array = [0]
-var car := "r34"
+var car := "p:e30"
 var paint := 0
 var rims: Array = [0] # alınan jantlar
 var rim := 0
@@ -129,9 +131,9 @@ func _ready() -> void:
 	if cfg.load(PATH) == OK:
 		coins = cfg.get_value("p", "coins", 0)
 		best = cfg.get_value("p", "best", 0)
-		cars = cfg.get_value("p", "cars", ["r34"])
+		cars = cfg.get_value("p", "cars", ["p:e30"])
 		paints = cfg.get_value("p", "paints", [0])
-		car = cfg.get_value("p", "car", "r34")
+		car = cfg.get_value("p", "car", "p:e30")
 		paint = cfg.get_value("p", "paint", 0)
 		rims = cfg.get_value("p", "rims", [0])
 		rim = cfg.get_value("p", "rim", 0)
@@ -156,6 +158,15 @@ func _ready() -> void:
 		radio = cfg.get_value("p", "radio", 1)
 		day = cfg.get_value("m", "day", "")
 		missions = cfg.get_value("m", "list", [])
+		# yeni ilk araç herkese; listeden çıkan araçların parası iade
+		if not "p:e30" in cars:
+			cars.append("p:e30")
+		for id in RETIRED:
+			if id in cars:
+				cars.erase(id)
+				coins += RETIRED[id]
+		if CARS.all(func(c): return c.id != car):
+			car = "p:e30"
 	refresh_missions()
 	var now := Time.get_time_dict_from_system()
 	clock = now.hour + now.minute / 60.0

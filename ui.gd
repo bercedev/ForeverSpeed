@@ -74,6 +74,8 @@ var cockpit: Control
 var pause_box: Control
 var hud_missions: Label
 var race_label: Label
+var hb_btn: Button
+var rival_back: Label # rakip geride: altta ok ve mesafe
 var np_label: Label # çalan parça
 var station_buttons: Array[Button] = []
 var cam_buttons: Array[Button] = []
@@ -160,6 +162,10 @@ func build_play() -> void:
 	icon_button(play_box, "pause", 306, 18, func(): main.set_pause(true))
 	icon_button(play_box, "radio", 224, 18, func(): main.change_station())
 	icon_button(play_box, "camera", 142, 18, func(): main.change_cam())
+	# el freni: sağ altta, başparmağın altında; basılı tutulur. Dokunuşu main okur (ikinci parmakla da çalışsın), düğme yalnız görüntü
+	hb_btn = button(play_box, "", 262, -250, 116, 116, func(): pass, true, 16)
+	hb_btn.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	hb_btn.draw.connect(draw_icon.bind(hb_btn, "handbrake"))
 	# sol üstte günlük görevler
 	hud_missions = Label.new()
 	hud_missions.offset_left = 12.0
@@ -176,6 +182,10 @@ func build_play() -> void:
 	race_label.offset_left = 150.0
 	race_label.offset_right = 360.0
 	race_label.add_theme_color_override("font_color", Color(1.0, 0.55, 0.5))
+	rival_back = label(play_box, 26, -330, "", true)
+	rival_back.add_theme_color_override("font_color", Color(1.0, 0.5, 0.45))
+	rival_back.add_theme_constant_override("outline_size", 6)
+	rival_back.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
 	# sağda yaklaşan yol çalışması (turuncu duba) ve radar (mavi kamera) ikonları, altında kalan metre
 	signs = Control.new()
 	signs.anchor_left = 0.5
@@ -218,8 +228,17 @@ func update_hud() -> void:
 	if Engine.get_process_frames() % 20 == 0: # görev metni sık değişmez
 		set_text(hud_missions, hud_missions_text())
 	race_label.visible = main.race_on
+	if hb_btn.get_meta("on", false) != main.handbrake:
+		hb_btn.set_meta("on", main.handbrake)
+		hb_btn.queue_redraw()
+		hb_btn.scale = Vector2.ONE * (0.94 if main.handbrake else 1.0)
+		hb_btn.pivot_offset = hb_btn.size * 0.5
+	var back: float = main.distance - main.rival_dist
+	rival_back.visible = main.race_on and back > 12.0 # ekranda görünmüyor: ne kadar geride kaldığı
 	if main.race_on:
 		set_text(race_label, main.race_text())
+		if rival_back.visible:
+			set_text(rival_back, "▼  RAKİP %d m GERİDE" % int(back))
 	hint_label.modulate.a = clampf(6.0 - main.run_time, 0.0, 1.0)
 
 
@@ -379,9 +398,9 @@ func show_play() -> void:
 
 func _process(dt: float) -> void:
 	if garage_box.visible and g_ind: # bölümlü sekmenin seçim kapsülü: kritik sönümlü, o anki yerinden kayar
-		var tx := -290.0 + g_tab * 116.0 + 4.0
+		var tx := -326.0 + g_tab * 132.0
 		g_ind.offset_left = lerpf(g_ind.offset_left, tx, 1.0 - exp(-dt * 16.0))
-		g_ind.offset_right = g_ind.offset_left + 108.0
+		g_ind.offset_right = g_ind.offset_left + 124.0
 	if pause_box.visible:
 		set_text(np_label, main.now_playing()) # parça bitip yenisi başlarsa güncel kalsın
 
@@ -473,6 +492,13 @@ func draw_icon(b: Button, kind: String) -> void:
 			b.draw_rect(Rect2(c + Vector2(-17, -8), Vector2(34, 22)), col, false, 3.0)
 			b.draw_rect(Rect2(c + Vector2(-7, -13), Vector2(12, 5)), col)
 			b.draw_arc(c + Vector2(0, 3), 7.0, 0.0, TAU, 24, col, 3.0, true)
+		"handbrake": # (P) ve yanlarda yay: el freni ikonu
+			col = Color(1.0, 0.45, 0.4) if main.handbrake else col
+			b.draw_arc(c + Vector2(0, -8), 26.0, 0.0, TAU, 40, col, 4.0, true)
+			b.draw_arc(c + Vector2(0, -8), 36.0, PI * 0.7, PI * 1.3, 16, col, 4.0, true)
+			b.draw_arc(c + Vector2(0, -8), 36.0, -PI * 0.3, PI * 0.3, 16, col, 4.0, true)
+			b.draw_string(ThemeDB.fallback_font, c + Vector2(-30, 2), "P", HORIZONTAL_ALIGNMENT_CENTER, 60, 30, col)
+			b.draw_string(ThemeDB.fallback_font, c + Vector2(-58, 46), "EL FRENİ", HORIZONTAL_ALIGNMENT_CENTER, 116, 14, col)
 		"radio":
 			# iki sekizlik nota ve bağı
 			for dx in [-9.0, 9.0]:
@@ -489,7 +515,7 @@ func set_chase_sign(sec: float) -> void:
 func build_road() -> void:
 	road_box = box()
 	var dim := ColorRect.new()
-	dim.color = Color(0, 0, 0, 0.7)
+	dim.color = Color(0, 0, 0, 0.9)
 	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
 	road_box.add_child(dim)
 	label(road_box, 34, 380, "YOL NASIL OLSUN?").add_theme_font_override("font", title_font)
@@ -526,6 +552,19 @@ func near_popup(text: String, color: Color) -> void:
 func flash() -> void:
 	flash_rect.color.a = 0.85
 	create_tween().tween_property(flash_rect, "color:a", 0.0, 0.35)
+
+
+# Kararıp açılır (yol ayrımında başka bölgeye geçiş).
+func fade() -> void:
+	var r := ColorRect.new()
+	r.color = Color(0, 0, 0, 0)
+	r.set_anchors_preset(Control.PRESET_FULL_RECT)
+	r.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	play_box.add_child(r)
+	var t := create_tween()
+	t.tween_property(r, "color:a", 1.0, 0.25)
+	t.tween_property(r, "color:a", 0.0, 0.45)
+	t.tween_callback(r.queue_free)
 
 
 # Kokpit: tavan, A sütunları, torpido, direksiyon; yağmurda silecekler süpürür.
@@ -958,17 +997,17 @@ func build_garage() -> void:
 	f_caps.base_font = ThemeDB.fallback_font
 	f_caps.variation_embolden = 0.4
 	f_caps.spacing_glyph = 2
-	button(garage_box, "‹  Geri", -262, 18, 140, 48, close_garage, false, 17)
-	g_coins = label(garage_box, 17, 22)
+	button(garage_box, "‹  Geri", -258, 18, 150, 54, close_garage, false, 21)
+	g_coins = label(garage_box, 22, 24)
 	g_coins.anchor_left = 0.5
 	g_coins.anchor_right = 0.5
-	g_coins.offset_left = 170.0
+	g_coins.offset_left = 130.0
 	g_coins.offset_right = 340.0
 	g_coins.add_theme_color_override("font_color", Color(1.0, 0.82, 0.35))
 	g_coins.add_theme_stylebox_override("normal", capsule(Color(1.0, 0.8, 0.3, 0.12), Color(1.0, 0.8, 0.3, 0.35)))
-	g_name = label(garage_box, 42, 80)
+	g_name = label(garage_box, 48, 84)
 	g_name.add_theme_font_override("font", f_title)
-	g_status = label(garage_box, 14, 140)
+	g_status = label(garage_box, 20, 150)
 	g_status.add_theme_font_override("font", f_caps)
 	g_status.add_theme_color_override("font_color", Color(0.75, 0.8, 0.9))
 	g_status.anchor_left = 0.5
@@ -999,10 +1038,10 @@ func build_garage() -> void:
 	seg.anchor_right = 0.5
 	seg.anchor_top = 1.0
 	seg.anchor_bottom = 1.0
-	seg.offset_left = -294.0
-	seg.offset_right = 294.0
-	seg.offset_top = -92.0
-	seg.offset_bottom = -36.0
+	seg.offset_left = -332.0
+	seg.offset_right = 332.0
+	seg.offset_top = -96.0
+	seg.offset_bottom = -32.0
 	seg.add_theme_stylebox_override("panel", capsule(Color(0, 0, 0, 0.45), Color(1, 1, 1, 0.08)))
 	seg.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	garage_box.add_child(seg)
@@ -1011,15 +1050,15 @@ func build_garage() -> void:
 	g_ind.anchor_right = 0.5
 	g_ind.anchor_top = 1.0
 	g_ind.anchor_bottom = 1.0
-	g_ind.offset_left = -286.0
-	g_ind.offset_right = -178.0
-	g_ind.offset_top = -88.0
-	g_ind.offset_bottom = -40.0
+	g_ind.offset_left = -326.0
+	g_ind.offset_right = -202.0
+	g_ind.offset_top = -92.0
+	g_ind.offset_bottom = -36.0
 	g_ind.add_theme_stylebox_override("panel", capsule(Color(1, 1, 1, 0.16), Color(1, 1, 1, 0.22)))
 	g_ind.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	garage_box.add_child(g_ind)
 	for i in G_TABS.size():
-		var tb := button(garage_box, G_TABS[i], -232.0 + i * 116.0, -90, 112, 52, pick_tab.bind(i), true, 14)
+		var tb := button(garage_box, G_TABS[i], -264.0 + i * 132.0, -94, 128, 60, pick_tab.bind(i), true, 18)
 		for st in ["normal", "hover", "pressed", "hover_pressed", "focus", "disabled"]:
 			tb.add_theme_stylebox_override(st, StyleBoxEmpty.new())
 		tb.add_theme_font_override("font", f_caps)
@@ -1033,37 +1072,37 @@ func build_garage() -> void:
 	# ARAÇ: hız ve ivme çubukları, bilgiler
 	for k in 2:
 		var y := -530.0 + k * 58.0
-		var l := label(g_pages[0], 18, y, ["HIZ", "İVME"][k], true)
+		var l := label(g_pages[0], 22, y - 4.0, ["HIZ", "İVME"][k], true)
 		l.anchor_left = 0.5
 		l.anchor_right = 0.5
 		l.offset_left = -290.0
 		l.offset_right = -160.0
 		l.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 		g_bars.append(make_bar(g_pages[0], y + 6.0))
-	g_info = label(g_pages[0], 15, -404, "", true)
+	g_info = label(g_pages[0], 20, -404, "", true)
 	g_info.add_theme_font_override("font", f_caps)
 	g_info.add_theme_color_override("font_color", Color(0.6, 0.85, 1.0))
 	# BOYA: düz, modifiye, desen (üç sıra)
-	g_paint_label = label(g_pages[1], 15, -552, "", true)
+	g_paint_label = label(g_pages[1], 19, -556, "", true)
 	g_paint_label.add_theme_font_override("font", f_caps)
 	for i in Profile.PAINTS.size():
 		swatches.append(button(g_pages[1], "", (i % 9 - 4) * 66.0, -510.0 + (i / 9) * 62.0, 54, 54, pick_paint.bind(i), true))
 	# JANT: 3x3
 	for i in Profile.RIMS.size():
-		var rb := button(g_pages[2], "", -210.0 + (i % 3) * 210.0, -530.0 + (i / 3) * 64.0, 200, 56, pick_rim.bind(i), true, 13)
+		var rb := button(g_pages[2], "", -210.0 + (i % 3) * 210.0, -530.0 + (i / 3) * 64.0, 200, 58, pick_rim.bind(i), true, 18)
 		rb.draw.connect(draw_chip.bind(rb, Profile.RIMS[i][2] if i > 0 else Color(0.55, 0.57, 0.6))) # jantın rengi
 		rim_btns.append(rb)
 	# MODİFİYE: satır başına ad ve seçenek düğmesi
 	var mi := 0
 	for k in Profile.MODS:
 		var y := -530.0 + mi * 66.0
-		var l := label(g_pages[3], 18, y + 14.0, Profile.MODS[k][0], true)
+		var l := label(g_pages[3], 22, y + 12.0, Profile.MODS[k][0], true)
 		l.anchor_left = 0.5
 		l.anchor_right = 0.5
 		l.offset_left = -290.0
 		l.offset_right = -20.0
 		l.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
-		var mb := button(g_pages[3], "", 140, y, 280, 56, use_mod.bind(k), true, 15)
+		var mb := button(g_pages[3], "", 140, y, 280, 58, use_mod.bind(k), true, 19)
 		if k == "glow": # seçili neon rengi
 			mb.draw.connect(func():
 				var g := Profile.mod(Profile.CARS[g_car].id, "glow")
@@ -1074,14 +1113,14 @@ func build_garage() -> void:
 	# MOTOR: geliştirmeler
 	for k in Profile.UPGRADES:
 		var y := -530.0 + up_rows.size() * 66.0
-		var l := label(g_pages[4], 18, y + 14.0, Profile.UPGRADES[k][0], true)
+		var l := label(g_pages[4], 22, y + 12.0, Profile.UPGRADES[k][0], true)
 		l.anchor_left = 0.5
 		l.anchor_right = 0.5
 		l.offset_left = -290.0
 		l.offset_right = -170.0
 		l.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
-		up_rows[k] = [l, make_bar(g_pages[4], y + 20.0, Profile.MAX_LEVEL), button(g_pages[4], "", 200, y, 160, 56, buy_up.bind(k), true, 16)]
-	g_action = primary(button(garage_box, "", 0, -186, 440, 74, garage_action, true, 22))
+		up_rows[k] = [l, make_bar(g_pages[4], y + 20.0, Profile.MAX_LEVEL), button(g_pages[4], "", 200, y, 160, 58, buy_up.bind(k), true, 20)]
+	g_action = primary(button(garage_box, "", 0, -186, 440, 76, garage_action, true, 26))
 
 
 # İnce ilerleme çubuğu (garaj değerleri, geliştirme seviyesi). y alttan ölçülür.
@@ -1451,9 +1490,8 @@ func button(parent: Control, text: String, x: float, y: float, w: float, h: floa
 
 # Basınca hızla küçülür, bırakınca yumuşak yaylanarak döner; o anki ölçekten başlar (yarıda kesilebilir).
 func press_anim(b: Button, to: float) -> void:
-	var old: Tween = b.get_meta("press", null)
-	if old:
-		old.kill()
+	if b.has_meta("press"):
+		(b.get_meta("press") as Tween).kill()
 	var t := b.create_tween()
 	t.tween_property(b, "scale", Vector2.ONE * to, 0.07 if to < 1.0 else 0.22) \
 		.set_trans(Tween.TRANS_QUAD if to < 1.0 else Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)

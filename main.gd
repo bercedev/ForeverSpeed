@@ -119,6 +119,11 @@ var lens_nitro := 0.0
 var touch_start := Vector2.ZERO
 var swiped := false
 var holding := false
+var handbrake := false # el freni: frenden sert durdurur, araç savrulur (zayıf araç daha çok)
+var hb_index := -1 # el frenini tutan parmak
+var steer_index := -1 # direksiyon/fren/nitro parmağı: el freni dışında ilk dokunan
+var slide := 0.0 # el freni savrulması: + sağa
+var slide_dir := 0.0
 var hold_time := 0.0
 var braking := false
 var hit_car: Node3D # çarpılan araç kazadan sonra bize yapışır, içimizden geçmez
@@ -171,6 +176,12 @@ var widen_a := -1e9 # 3. şerit bölgesi (travel cinsinden): a'da açılmaya ba�
 var widen_b := -1e9
 var next_widen := 0.0
 var widen_said := 0 # uyarılar bir kez
+# yol ayrımı: bazı 3. şeritler çıkış; ayrılma noktasında o şeritteysek başka bir bölgeye geçeriz
+var fork_on := false
+var fork_at := 0.0 # ayrılma noktası (travel)
+var fork_dest := 0 # çıkışın götürdüğü bölge
+var fork_node: Node3D # ayrım bariyeri ve ok panosu
+var dbg_fork := false # test: sıradaki 3. şerit sağda ve ayrım
 var widen_side := 1 # +1 sağda (bizim yön), -1 solda (karşı yön)
 # yarış modu: trafikte bir rakiple RACE_LEN metrelik kapışma
 const RACE_LEN := 4000.0
@@ -185,6 +196,8 @@ var rival_nitro_t := 0.0
 var rival_nitro_cd := 8.0
 var rival_bump_t := 0.0
 var rival_think := 0.0
+var race_blink := 0.0 # yarışta kaza: araç durur, bu süre boyunca yanıp söner ve çarpışmaz
+var finish: Node3D # yarışın bitiş kapısı
 var rival_stun := 0.0 # vurulunca bu kadar sn hızlanamaz, yalpalar
 var benching := false
 var weather := "sağanak"
@@ -318,7 +331,7 @@ func _ready() -> void:
 	for i in PROP_COUNT:
 		var p := Regions.make_chunk(i)
 		p.position.z = 30.0 - i * Regions.GAP
-		Regions.configure(p, region_at(travel - p.position.z))
+		Regions.configure(p, region_at(travel - p.position.z), region_edge(travel - p.position.z))
 		add_child(p)
 		props.append(p)
 	set_player_car(Profile.car, Profile.paint)
@@ -342,6 +355,7 @@ func _ready() -> void:
 	build_tunnel()
 	build_works()
 	build_incident()
+	build_fallen()
 	build_sirens()
 	build_gate()
 	build_radar()
@@ -378,7 +392,18 @@ func _ready() -> void:
 			elif arg.begins_with("clock="):
 				Profile.clock = float(arg.substr(6))
 			elif arg.begins_with("rim="):
-				set_player_car(Profile.car, Profile.paint, int(arg.substr(4)))
+				set_player_car(car.get_meta("id"), Profile.paint, int(arg.substr(4)))
+			elif arg.begins_with("region="): # region=2:-150 → köprünün başlangıcı 150 m önde
+				var rv := arg.substr(7).split(":")
+				region_offset = fposmod(int(rv[0]) * Regions.LEN - travel + float(rv[1]), 4.0 * Regions.LEN)
+				for p in props:
+					Regions.configure(p, region_at(travel - p.position.z), region_edge(travel - p.position.z))
+			elif arg == "fork":
+				next_widen = travel
+				dbg_fork = true
+			elif arg == "fallen":
+				fallen_on = true
+				fallen_at = travel + 120.0
 			elif arg == "incident":
 				incident_on = true
 				incident_at = travel + 19.0
@@ -392,6 +417,19 @@ func _ready() -> void:
 				Profile.cam = int(arg.substr(4))
 			elif arg.begins_with("gtab="):
 				ui.pick_tab(int(arg.substr(5)))
+			elif arg.begins_with("off="): # test: off=sky / lens / fog / glow — telefonda hangisi kasıyor
+				match arg.substr(4):
+					"sky": env.background_mode = Environment.BG_COLOR
+					"lens": lens_rect.visible = false
+					"fog": env.fog_enabled = false
+					"glow": env.glow_enabled = false
+			elif arg.begins_with("mod="): # mod=anahtar:seçenek, kaydetmeden (test)
+				var kv := arg.substr(4).split(":")
+				var cid: String = car.get_meta("id")
+				if not Profile.mods.has(cid):
+					Profile.mods[cid] = {}
+				Profile.mods[cid][kv[0]] = int(kv[1])
+				set_player_car(cid, Profile.paint)
 			elif arg.begins_with("car="):
 				set_player_car(arg.substr(4), Profile.paint)
 			elif arg.begins_with("shot="): # shot=dosya[:sn]: o kadar sn sonra ekranı kaydedip çıkar
@@ -419,7 +457,7 @@ func dbg_region(r: int) -> void:
 		return
 	region_offset = fposmod(r * Regions.LEN - travel + 200.0, 4.0 * Regions.LEN)
 	for p in props:
-		Regions.configure(p, region_at(travel - p.position.z))
+		Regions.configure(p, region_at(travel - p.position.z), region_edge(travel - p.position.z))
 		Regions.set_widen(p, widen_mode(travel - p.position.z), widen_side)
 
 
@@ -467,6 +505,10 @@ func bench() -> void:
 		["lens yok", func(on): lens_rect.visible = not on],
 		["arayuz yok", func(on): ui.visible = not on],
 		["glow yok", func(on): env.glow_enabled = not on],
+		["gok yok", func(on): env.background_mode = Environment.BG_COLOR if on else Environment.BG_SKY],
+		["sis yok", func(on): env.fog_enabled = not on],
+		["oyuncu modeli yok", func(on): car.get_child(0).visible = not on],
+		["huzme ve lamba lekesi yok", func(on): cam.cull_mask = cam.cull_mask & ~4 if on else cam.cull_mask | 4],
 	]
 	await get_tree().create_timer(4.0).timeout
 	for st in steps:
@@ -514,6 +556,7 @@ func _process(dt: float) -> void:
 	update_tunnel(step, dt)
 	update_works(dt)
 	update_incident(dt)
+	update_fallen()
 	update_widen()
 	update_gate()
 	update_radar()
@@ -546,10 +589,26 @@ func _unhandled_input(e: InputEvent) -> void:
 			return
 	if state != "play":
 		return
-	if (e is InputEventScreenTouch or e is InputEventScreenDrag) and e.index != 0:
-		return # ikinci parmak ne direksiyon ne fren ne nitro
+	# el freni düğmesi: hangi parmakla basılırsa basılsın
+	if e is InputEventScreenTouch:
+		if e.pressed and ui.hb_btn.get_global_rect().grow(12.0).has_point(e.position):
+			hb_index = e.index
+			handbrake = true
+			return
+		if not e.pressed and e.index == hb_index:
+			hb_index = -1
+			handbrake = false
+			return
+	if (e is InputEventScreenTouch or e is InputEventScreenDrag) and e.index == hb_index:
+		return
+	if e is InputEventScreenTouch and e.pressed and steer_index == -1:
+		steer_index = e.index
+	if (e is InputEventScreenTouch or e is InputEventScreenDrag) and e.index != steer_index:
+		return # öteki parmak ne direksiyon ne fren ne nitro
 	if e is InputEventScreenTouch:
 		holding = e.pressed
+		if not e.pressed:
+			steer_index = -1
 		if e.pressed:
 			touch_start = e.position
 			swiped = false
@@ -623,9 +682,15 @@ func to_menu() -> void:
 func crash(c: Node3D, reason := "KAZA", crashed := true) -> void:
 	if state != "play":
 		return
+	if race_on and crashed:
+		race_wreck(c)
+		return
 	state = "over"
 	finished = not crashed
 	braking = false
+	handbrake = false
+	hb_index = -1
+	steer_index = -1
 	nitro_t = 0.0
 	close_tip()
 	hit_car = c
@@ -634,7 +699,8 @@ func crash(c: Node3D, reason := "KAZA", crashed := true) -> void:
 		hit_push = clampf(kmh / 3.6 * 0.3, 4.0, 18.0)
 		buzz(400, 1.0)
 		play("crash")
-	var earned := int(score / 25.0) + run_coins # yoldan toplananlar da
+	# yarış skoru yüksek akar (rakip, sürtüşme, bitiş): bölen büyük, kazanana ayrıca 150 coin (kazanılan yarış ~500)
+	var earned := int(score / (30.0 if Profile.mode == "race" else 20.0)) + run_coins + (150 if reason == "YARIŞI KAZANDIN" else 0)
 	var new_best := Profile.finish_run(int(score), earned)
 	ui.show_over(int(score), distance / 1000.0, earned, new_best, reason)
 
@@ -713,7 +779,7 @@ func apply_settings() -> void:
 	vp.scaling_3d_scale = max_scale
 	vp.msaa_3d = [Viewport.MSAA_DISABLED, Viewport.MSAA_DISABLED, Viewport.MSAA_2X][q]
 	env.glow_enabled = q > 0
-	rain.amount = [300, 700, 1500][q]
+	rain.amount = [300, 600, 800][q] # çok yoğunken önden düşen çizgiler yolu kapatıyordu
 	flakes.amount = [500, 900, 1400][q]
 	lens_mat.shader = LENS_FULL if q == 2 else LENS_LITE
 	lens_mat.set_shader_parameter("taps", 6)
@@ -800,6 +866,9 @@ func set_pause(on: bool) -> void:
 		return
 	paused = on
 	holding = false # basılı kalan fren takılmasın
+	handbrake = false
+	hb_index = -1
+	steer_index = -1
 	get_tree().paused = on
 	ui.show_pause(on)
 	if not on and not tip_on:
@@ -847,6 +916,12 @@ func warm(on: bool) -> void:
 	ui.warm(on)
 
 
+# Bölgenin ilk ya da son üç parçası mı (köprüde kıyı görünsün).
+func region_edge(w: float) -> bool:
+	var into := fposmod(w + region_offset, Regions.LEN)
+	return into < Regions.GAP * 3.0 or into > Regions.LEN - Regions.GAP * 3.0
+
+
 func region_at(w: float) -> int:
 	return posmod(int(floor((w + region_offset) / Regions.LEN)), 4) # kameranın arkasında w negatif olabilir
 
@@ -883,7 +958,10 @@ func update_speed(dt: float) -> void:
 		# ilk araba geliştirmesiz 240'a çıkmaz; yol uzadıkça tavan 25 km/sa artar
 		top_now = minf(205.0 + distance / 200.0, 230.0) + stats.top
 		var top := top_now
-		if nitro_t > 0.0:
+		if handbrake or Input.is_key_pressed(KEY_SHIFT):
+			nitro_t = 0.0
+			kmh = move_toward(kmh, 0.0, 230.0 * dt) # frenden ~1,6 kat sert, sıfıra kadar
+		elif nitro_t > 0.0:
 			kmh = move_toward(kmh, top + NITRO_KMH, 120.0 * dt)
 		elif braking:
 			kmh = move_toward(kmh, MIN_KMH, 140.0 * stats.brake * dt)
@@ -891,7 +969,7 @@ func update_speed(dt: float) -> void:
 			kmh = move_toward(kmh, top, 40.0 * dt)
 		else:
 			kmh = move_toward(kmh, top, accel_rate(kmh, top) * stats.accel * dt)
-	player_mat.set_shader_parameter("tail_energy", 12.0 if braking else 4.0)
+	player_mat.set_shader_parameter("tail_energy", 12.0 if braking or handbrake else 4.0)
 	var g := 1
 	while g < 6 and kmh >= GEAR_FRAC[g] * top_now:
 		g += 1
@@ -997,7 +1075,7 @@ func update_props(step: float) -> void:
 		p.position.z += step
 		if p.position.z > 50.0:
 			p.position.z -= PROP_COUNT * Regions.GAP
-			Regions.configure(p, region_at(travel - p.position.z))
+			Regions.configure(p, region_at(travel - p.position.z), region_edge(travel - p.position.z))
 			Regions.set_widen(p, widen_mode(travel - p.position.z), widen_side)
 		var covered := p.position.z < tunnel_t0 + 25.0 and p.position.z > tunnel_t1 - 5.0 # tünelin içinden süs çıkmasın
 		(p.get_meta("lamp") as Node3D).visible = not covered
@@ -1006,6 +1084,7 @@ func update_props(step: float) -> void:
 
 func update_traffic(step: float, dt: float) -> void:
 	flash_glow = 0.0
+	var ahead_car: Node3D = null # şeridimizde hemen önümüzdeki araç (5 sn arkasında kalırsak selektör)
 	for i in range(traffic.size() - 1, -1, -1): # sondan başa: silerken kopya dizi gerekmez
 		var c := traffic[i]
 		if c == hit_car:
@@ -1015,6 +1094,15 @@ func update_traffic(step: float, dt: float) -> void:
 		var dir: int = c.get_meta("dir")
 		# bizim yöndekiler bizden yavaş gider, karşı yöndekiler bize doğru gelir
 		var v: float = LANE_KMH[c.get_meta("lane")]
+		if c.get_meta("weave", false):
+			v += 25.0
+		elif c.get_meta("hazard", false):
+			v = 45.0
+		if dir > 0 and c != patrol:
+			var lead := lane_blocker(c.get_meta("lane"), c.position.z, 0.0, c) # aynı şeritte öndeki
+			if lead and lead.get_meta("dir") > 0 and c.position.z - lead.position.z < len_gap(lead) + 12.0:
+				v = minf(v, lead.get_meta("v", v)) # içinden geçmez, arkasında hızına iner
+		c.set_meta("v", v)
 		# arkamızdan yetişen araç bize bindirmez: hızımıza iner ve selektör yapar
 		if dir > 0 and before > 0.0 and before < len_gap(c) + 10.0 and v > kmh \
 				and absf(c.position.x - car.position.x) < side_gap(c) + 0.5:
@@ -1026,6 +1114,18 @@ func update_traffic(step: float, dt: float) -> void:
 				and c.get_meta("lane") == wall_right(c.position.z, 5.0):
 			v *= 0.8
 		c.position.z += step - dir * v / 3.6 * dt
+		var dr: float = c.get_meta("drift", 0.0)
+		if dr > 0.0:
+			var t: float = c.get_meta("drift_t") + dt
+			c.set_meta("drift_t", t)
+			var off := dr * sin(minf(t / c.get_meta("drift_len"), 1.0) * PI)
+			c.position.x = LANES[c.get_meta("lane")] + off
+			c.rotation.y = sin(minf(t / c.get_meta("drift_len"), 1.0) * TAU) * 0.04 # içeri dönüp geri düzelir
+		if dir > 0 and c != patrol and not c.get_meta("ghost", false):
+			traffic_ai(c, dt)
+			if -before > 0.0 and -before < len_gap(c) + 18.0 and absf(c.position.x - car.position.x) < side_gap(c) \
+					and (ahead_car == null or c.position.z > ahead_car.position.z):
+				ahead_car = c
 		var fl: float = c.get_meta("flash", 0.0)
 		if fl > 0.0:
 			c.set_meta("flash", fl - dt)
@@ -1051,7 +1151,7 @@ func update_traffic(step: float, dt: float) -> void:
 			else:
 				(pool if dir > 0 else pool_on).append(c)
 		elif state == "play" and not c.get_meta("ghost", false):
-			if touching(c):
+			if touching(c) and race_blink <= 0.0:
 				if dir > 0 and before > 0.6 * len_gap(c):
 					c.position.z = car.position.z + len_gap(c) # arkadaki araç bindirmez, hak gitmez
 				else:
@@ -1061,6 +1161,8 @@ func update_traffic(step: float, dt: float) -> void:
 				if c == patrol and kmh > 230.0 and randf() < 0.35: # devriyeyi geçmek her zaman kovalatmaz
 					traffic.erase(c)
 					start_chase()
+	update_tailgate(ahead_car, dt)
+	update_steady(dt)
 
 
 func touching(c: Node3D) -> bool:
@@ -1074,7 +1176,9 @@ func len_gap(c: Node3D) -> float:
 
 # İki aracın yanlardan değmeden durabileceği en küçük merkez aralığı: yarım genişlikler toplamı.
 func side_gap(c: Node3D) -> float:
-	return (c.get_meta("half_w", 0.95) + car.get_meta("half_w", 0.95)) * 0.82 # çarpışma kutusu dar: iki aracın arasından sıyrılarak geçilir
+	# çarpışma kutusu biraz dar: yan yana iki aracın arasından sıyrılarak geçilebilir. Çizgi üstünde gidip kombo
+	# kasılmasın diye near_miss çizgi üstünde bonus vermez, update_steady sabit gidene polis gönderir.
+	return (c.get_meta("half_w", 0.95) + car.get_meta("half_w", 0.95)) * 0.86
 
 
 # Temas: karşıdan gelene değmek ya da tam arkadan büyük hız farkıyla bindirmek kaza. Sıyırmak, yandan
@@ -1119,6 +1223,11 @@ func near_miss(c: Node3D) -> void:
 	if kmh < NEAR_MIN_KMH or gap > NEAR_GAP:
 		return
 	var head_on: bool = c.get_meta("dir") < 0
+	var nearest := 9.0
+	for l in LANES:
+		nearest = minf(nearest, absf(car.position.x - l))
+	if nearest > 1.1: # şerit çizgisinin üstünde: yakın geçme sayılmaz
+		return
 	combo = mini(combo + 1, 10)
 	combo_t = COMBO_WINDOW
 	var close := 1.0 + (NEAR_GAP - gap) / NEAR_GAP # 1 (sınırda) .. 2 (sürtünerek)
@@ -1149,10 +1258,20 @@ func update_player(dt: float) -> void:
 	car.position.x = lerpf(car.position.x, target_x, 1.0 - exp(-12.0 * dt))
 	player_mat.set_shader_parameter("car_inv", car.global_transform.affine_inverse()) # desenli boyalar araçla gitsin
 	var lean := clampf((car.position.x - before) / maxf(dt, 0.001) * 0.12, -2.0, 2.0) # yana kayma hızına göre gövde yatar
+	# el freni: arka kayar, burun yana döner, araç savrulur; zayıf (ivmesi düşük) araç daha çok
+	var loose := clampf(1.45 - float(Profile.car_info(Profile.car).accel), 0.25, 0.75)
+	if (handbrake or Input.is_key_pressed(KEY_SHIFT)) and kmh > 50.0 and state == "play":
+		if slide_dir == 0.0:
+			slide_dir = signf(car.position.x - before) if absf(car.position.x - before) > 0.002 else (1.0 if randf() < 0.5 else -1.0)
+		slide = move_toward(slide, slide_dir * loose * minf(kmh / 160.0, 1.0), 1.6 * dt)
+		target_x = clampf(target_x + slide * 4.5 * dt, left_limit(), right_limit())
+	else:
+		slide_dir = 0.0
+		slide = move_toward(slide, 0.0, 2.2 * dt)
 	if state == "over" and not finished:
 		car.rotation.y += dt * kmh / 60.0
 	else:
-		car.rotation = car.rotation.lerp(Vector3(0, -lean * 0.08, lean * 0.03), 1.0 - exp(-10.0 * dt))
+		car.rotation = car.rotation.lerp(Vector3(0, -lean * 0.08 - slide * 0.7, lean * 0.03), 1.0 - exp(-10.0 * dt))
 	# egzoz alevi yalnız nitroda (mavi) ve vites atınca kısa bir an (turuncu) görünür
 	var boost := nitro_t > 0.0
 	pop_t = maxf(pop_t - dt, 0.0)
@@ -1222,6 +1341,8 @@ func update_sky(dt: float, flash: float) -> void:
 	if sky_t > 0.0:
 		return
 	sky_t = 0.25
+	if not benching:
+		cam.cull_mask = cam.cull_mask | 4 if day < 0.8 else cam.cull_mask & ~4 # far huzmeleri ve lamba lekeleri gece
 	var bg := env.background_color
 	sky_mat.set_shader_parameter("horizon", bg)
 	sky_mat.set_shader_parameter("zenith", bg.darkened(0.45).lerp(Color(0.16, 0.3, 0.62), day * (1.0 - rain_level) * 0.8))
@@ -1413,6 +1534,9 @@ func update_camera(dt: float) -> void:
 	lens_mat.set_shader_parameter("nitro", lens_nitro)
 	rain_pm.direction = Vector3(gust * 0.15, -1, ratio * 0.8)
 	garage_room.visible = ui.garage_open
+	car.position.y = 0.08 if ui.garage_open else 0.0 # garajda döner platformun üstünde
+	for g in lamp_glows: # far kartları yalnız arkadan/önden bakınca doğru görünür; garajda kapalı
+		g.visible = not ui.garage_open
 	if ui.garage_open:
 		# garaj odasında: parmakla sürükleyince araç etrafında döner, bırakınca yavaşça kendi döner
 		# araç hep yavaşça döner; parmakla 1:1 çevrilir, bırakınca son hızıyla döner ve sürtünmeyle yavaşlar
@@ -1472,7 +1596,9 @@ func update_camera(dt: float) -> void:
 	cam.quaternion = cam.quaternion.slerp(Quaternion.from_euler(Vector3(deg_to_rad(pitch), 0, roll)), 1.0 if mode >= 2 else k)
 	cam.fov = lerpf(cam.fov, fov, 1.0 - exp(-5.0 * dt))
 	lens_mat.set_shader_parameter("speed", clampf((kmh - 120.0) / 140.0, 0.0, 1.0))
-	car.get_child(0).visible = mode != 3 # kokpitte gövde gizli, pano ve silecekler arayüzde çizilir
+	# kokpitte gövde gizli (pano ve silecekler arayüzde çizilir); yarışta kazadan sonra yanıp söner
+	if not benching:
+		car.get_child(0).visible = mode != 3 and (race_blink <= 0.0 or fmod(race_blink, 0.2) > 0.1)
 	# silecek: her süpürüşte camdaki damlalar silinir, yağmur yeniden ıslatır
 	if mode == 3 and rain_level > 0.15:
 		var ph := fmod(alive / 1.3, 1.0)
@@ -1540,6 +1666,18 @@ func spawn_oncoming() -> void:
 
 func place(c: Node3D, l: int, dir: int) -> void:
 	c.set_meta("flash", 0.0)
+	# karşı yönün iç şeridinde ara sıra orta çizgiyi aşıp bizim şeride sarkan araç
+	c.set_meta("drift", randf_range(1.0, 1.5) if dir < 0 and l == 1 and randf() < 0.12 else 0.0)
+	c.set_meta("drift_t", 0.0)
+	c.set_meta("drift_len", randf_range(2.5, 4.0))
+	# bizim yönde ara sıra makas atan (hızlı, şerit değiştirir) ya da dörtlüleri yanan yavaş araç (en sağda)
+	var r := randf()
+	c.set_meta("weave", dir > 0 and c != patrol and r < 0.06)
+	c.set_meta("hazard", dir > 0 and c != patrol and l == 3 and r > 0.93)
+	if c.get_meta("hazard"):
+		hazard_lights(c)
+	for h in c.get_meta("hz", []):
+		h.visible = false
 	set_beam(c, 1.0)
 	c.set_meta("lane", l)
 	c.set_meta("dir", dir)
@@ -1548,6 +1686,98 @@ func place(c: Node3D, l: int, dir: int) -> void:
 	c.rotation = Vector3.ZERO
 	c.visible = true
 	traffic.append(c)
+
+
+# Bizim yöndeki araç: hedef şeride yumuşakça kayar; makasçı birkaç saniyede bir boş komşu şeride geçer
+# (dibimizdeyken önümüze kırmaz); dörtlülü yanıp söner.
+func traffic_ai(c: Node3D, dt: float) -> void:
+	var l: int = c.get_meta("lane")
+	if c.get_meta("weave", false):
+		var t: float = c.get_meta("weave_t", 1.0) - dt
+		if t <= 0.0:
+			t = randf_range(1.5, 3.0)
+			var k := l + (1 if randf() < 0.5 else -1)
+			var near_us := lane_of(car.position.x) == k and absf(c.position.z - car.position.z) < 25.0
+			if k in ours() and not near_us and not lane_closed(k, c.position.z) and lane_blocker(k, c.position.z, 10.0, c) == null:
+				c.set_meta("lane", k)
+		c.set_meta("weave_t", t)
+	# kapalı şeride (devrik ağaç, kaza yeri, yol çalışması) yaklaşınca komşu şeride geçer
+	if lane_closed(l, c.position.z - 80.0):
+		for k in [l - 1, l + 1]:
+			if k in ours() and not lane_closed(k, c.position.z - 80.0):
+				c.set_meta("lane", k)
+				break
+	var tx: float = LANES[c.get_meta("lane")]
+	if absf(c.position.x - tx) > 0.01 or absf(c.rotation.y) > 0.005:
+		steer(c, tx, dt, 3.0)
+	if c.get_meta("hazard", false):
+		for h in c.get_meta("hz", []):
+			h.visible = fmod(alive, 0.8) < 0.4
+
+
+# Dörtlü: arka köşelerde turuncu hâle, araç başına bir kez kurulur.
+func hazard_lights(c: Node3D) -> void:
+	if c.has_meta("hz"):
+		return
+	var hw: float = c.get_meta("half_w")
+	var hl: float = c.get_meta("half_l")
+	var y := clampf(c.get_meta("top") * 0.5, 0.5, 1.0)
+	var hz: Array[Node3D] = []
+	for sx in [-1.0, 1.0]:
+		hz.append(add_glow(c, Vector3(sx * (hw - 0.08), y, hl + 0.1), Color(1.0, 0.55, 0.05), 0.55, 1.0))
+	c.set_meta("hz", hz)
+
+
+# 10 sn hemen hiç yana kıpırdamadan gidersek (aynı şeritte ya da çizgi üstünde sabit) polis peşimize düşer.
+var steady_x := 0.0
+var steady_t := 0.0
+
+
+func update_steady(dt: float) -> void:
+	if state != "play" or Profile.mode not in ["normal", "time"] or chase_on or patrol_active:
+		steady_t = 0.0
+		return
+	if absf(car.position.x - steady_x) > 0.8:
+		steady_x = car.position.x
+		steady_t = 0.0
+		return
+	steady_t += dt
+	if steady_t > 10.0:
+		steady_t = 0.0
+		ui.toast("SABİT GİTTİN · POLİS PEŞİNDE!", Color(1.0, 0.4, 0.4))
+		radar_chase()
+
+
+# 5 sn bir aracın arkasında kalırsak selektör yaparız, araç boş komşu şeride çekilir.
+var tail_car: Node3D
+var tail_t := 0.0
+var my_flash := 0.0
+
+
+func update_tailgate(ahead: Node3D, dt: float) -> void:
+	if ahead != tail_car:
+		tail_car = ahead
+		tail_t = 0.0
+	if ahead and state == "play":
+		tail_t += dt
+		if tail_t > 5.0:
+			tail_t = -4.0
+			my_flash = 1.2
+			var l: int = ahead.get_meta("lane")
+			for k in [l + 1, l - 1]:
+				if k in ours() and k != lane_of(car.position.x) and not lane_closed(k, ahead.position.z) \
+						and lane_blocker(k, ahead.position.z, 10.0, ahead) == null:
+					ahead.set_meta("lane", k)
+					ui.popup("SELEKTÖR · YOL VERDİ", Color(0.85, 0.9, 1.0))
+					break
+	if my_flash > 0.0:
+		my_flash -= dt
+		var on := my_flash > 0.0 and fmod(my_flash, 0.3) > 0.15
+		for g in lamp_glows:
+			if g.material_override is ShaderMaterial and (g.material_override as ShaderMaterial).shader == preload("res://beam.gdshader"):
+				g.set_instance_shader_parameter("boost", 4.0 if on else 1.0)
+			elif not (g.material_override is ShaderMaterial): # far hâlesi (yol yansıması değil)
+				g.scale = Vector3.ONE * (1.8 if on else 1.0)
 
 
 # Çarpılan araç bizimle birlikte yavaşlar; darbeyle biraz öne itilip döner.
@@ -1628,6 +1858,11 @@ var incident_police: Node3D
 var incident_on := false
 var incident_at := 0.0 # fişeklerin başladığı yer (travel cinsinden)
 var next_incident := 2500.0
+# orman yolunda sağ şeride devrilmiş ağaç: önceden uyarı tabelası, şerit kapalı
+var fallen: Node3D
+var fallen_on := false
+var fallen_at := 0.0
+var next_fallen := 1500.0
 
 
 func make_wreck() -> Node3D:
@@ -1650,8 +1885,8 @@ func build_incident() -> void:
 	wreck.position = Vector3(LANES[3] + 0.3, 0, -INCIDENT_LEN + 22.0)
 	wreck.rotation.y = 0.5 # şeride çapraz
 	incident.add_child(wreck)
-	incident_police = make_kenney("police")
-	add_siren_kit(incident_police, -0.33, Build.mat(Color(1.0, 0.05, 0.05), 0.5, 0.0, 10.0), Build.mat(Color(0.1, 0.25, 1.0), 0.5, 0.0, 10.0), preload("res://audio/siren.ogg"))
+	incident_police = make_pack_car("cop")
+	add_siren_kit(incident_police, 0.24, Build.mat(Color(1.0, 0.05, 0.05), 0.5, 0.0, 10.0), Build.mat(Color(0.1, 0.25, 1.0), 0.5, 0.0, 10.0), preload("res://audio/siren.ogg"))
 	(incident_police.get_meta("snd") as AudioStreamPlayer3D).volume_db = -14.0
 	incident_police.position = Vector3(LANES[3], 0, -INCIDENT_LEN + 8.0)
 	incident_police.rotation.y = -0.15
@@ -1727,6 +1962,68 @@ func update_incident(dt: float) -> void:
 		(incident_police.get_meta("snd") as AudioStreamPlayer3D).stop()
 		ui.set_works_sign(-1.0)
 		next_incident = travel + randf_range(3000.0, 5500.0)
+
+
+# Devrik çam: yatay gövde, kökü yol kenarında, tepesi şeridin içinde; birkaç dal ve çam katmanı.
+func build_fallen() -> void:
+	fallen = Node3D.new()
+	fallen.visible = false
+	var bark := Build.mat(Color(0.22, 0.15, 0.09), 0.9)
+	var leaf := Build.mat(Color(0.07, 0.2, 0.09), 0.85)
+	var trunk := CylinderMesh.new()
+	trunk.top_radius = 0.16
+	trunk.bottom_radius = 0.32
+	trunk.height = 9.0
+	var t := MeshInstance3D.new()
+	t.mesh = trunk
+	t.material_override = bark
+	t.rotation = Vector3(0, 0.25, PI * 0.5) # yatık, hafif çapraz; kök +x (yol kenarı)
+	t.position = Vector3(5.6, 0.3, 0)
+	fallen.add_child(t)
+	var root := CylinderMesh.new()
+	root.top_radius = 0.7
+	root.bottom_radius = 0.5
+	root.height = 0.5
+	var r := MeshInstance3D.new()
+	r.mesh = root
+	r.material_override = bark
+	r.rotation = Vector3(0, 0, PI * 0.5)
+	r.position = Vector3(10.2, 0.5, -1.1)
+	fallen.add_child(r)
+	for i in 4: # dallı tepe: yan yatmış çam katmanları
+		var cone := CylinderMesh.new()
+		cone.top_radius = 0.05
+		cone.bottom_radius = 1.3 - i * 0.22
+		cone.height = 1.6
+		var c := MeshInstance3D.new()
+		c.mesh = cone
+		c.material_override = leaf
+		c.rotation = Vector3(0, 0.25, PI * 0.5)
+		c.position = Vector3(4.4 - i * 0.6, 0.7, 0.3 + i * 0.15)
+		fallen.add_child(c)
+	add_child(fallen)
+
+
+func update_fallen() -> void:
+	if not fallen_on:
+		if state == "play" and travel > next_fallen and region_at(travel + 600.0) == 0 and not works_on \
+				and not incident_on and not tunnel_on and not widen_hits(travel + 450.0, travel + 700.0):
+			fallen_on = true
+			fallen_at = travel + 600.0
+		return
+	var d := fallen_at - travel
+	fallen.visible = d < 330.0
+	fallen.position.z = -d
+	if state == "play" and not works_on and not incident_on:
+		ui.set_works_sign(d if d > 0.0 else 0.0, "DEVRİK AĞAÇ")
+	var hw: float = car.get_meta("half_w")
+	if state == "play" and absf(d) < 1.2 and car.position.x + hw > 2.6: # tepenin ucu ~2,3'te
+		crash(null, "AĞACA ÇARPTIN")
+	if d < -40.0:
+		fallen_on = false
+		fallen.visible = false
+		ui.set_works_sign(-1.0)
+		next_fallen = travel + randf_range(2500.0, 4500.0)
 
 
 func build_works() -> void:
@@ -1963,13 +2260,14 @@ func build_sirens() -> void:
 	var siren_stream: AudioStreamOggVorbis = preload("res://audio/siren.ogg")
 	siren_stream.loop = true
 	for kind in ["police", "ambulance", "firetruck"]:
-		var s := make_kenney(kind)
-		add_siren_kit(s, {"police": -0.33, "ambulance": -1.6, "firetruck": -1.9}[kind], red, blue, siren_stream) # tavan ortası / kasanın ön üstü
+		var s := make_pack_car("cop") if kind == "police" else make_kenney(kind) # polis: Fairhaven LT '80 (cars/cop)
+		add_siren_kit(s, {"police": 0.24, "ambulance": -1.6, "firetruck": -1.9}[kind], red, blue, siren_stream) # tepe lambası / kasanın ön üstü
+		s.set_meta("kind", kind)
 		s.visible = false
 		add_child(s)
 		sirens.append(s)
-	patrol = make_kenney("police")
-	add_siren_kit(patrol, -0.33, red, blue, siren_stream)
+	patrol = make_pack_car("cop")
+	add_siren_kit(patrol, 0.24, red, blue, siren_stream)
 	set_siren_lights(patrol, false) # devriyeyken çakarlar sönük
 	patrol.visible = false
 	add_child(patrol)
@@ -2134,7 +2432,7 @@ func update_radar() -> void:
 			ui.popup("RADAR  %d KM/SA  +%d" % [roundi(kmh), bonus], Color(1, 1, 1))
 			play("click", 0.6)
 			buzz(30, 0.4)
-			if kmh >= RADAR_MIN_KMH + 30.0 and Profile.mode in ["normal", "time"] and not chase_on and not patrol_active:
+			if kmh >= RADAR_MIN_KMH + 15.0 and Profile.mode in ["normal", "time"] and not chase_on and not patrol_active: # hızlı geçen her zaman kovalanır
 				radar_chase()
 	ui.set_radar_sign(d if d > 0.0 and state == "play" else -1.0)
 	if d < -40.0:
@@ -2260,6 +2558,9 @@ func start_race() -> void:
 	rival_lane = 3 if car.position.x < 3.5 else 2
 	rival.position = Vector3(LANES[rival_lane], 0, car.position.z)
 	rival.visible = true
+	if finish == null:
+		finish = build_finish()
+	race_blink = 0.0
 	ui.toast("YARIŞ BAŞLADI · %d KM" % int(RACE_LEN / 1000.0), Color(1.0, 0.4, 0.4))
 
 
@@ -2276,9 +2577,14 @@ func update_race(dt: float) -> void:
 	if rival_nitro_t > 0.0:
 		rival_nitro_t -= dt
 		target += NITRO_KMH
-	elif rival_nitro_cd <= 0.0 and gap < 30.0:
+	elif rival_nitro_cd <= 0.0 and gap < 80.0:
 		rival_nitro_t = 3.0
-		rival_nitro_cd = randf_range(10.0, 16.0)
+		rival_nitro_cd = randf_range(9.0, 15.0)
+		ui.popup("RAKİP NİTRO!", Color(0.6, 0.5, 1.0))
+	race_blink = maxf(race_blink - dt, 0.0)
+	if finish:
+		finish.position.z = car.position.z - (RACE_LEN - distance)
+		finish.visible = RACE_LEN - distance < 500.0
 	if rival_stun > 0.0:
 		rival_stun -= dt
 		target = minf(target, rival_kmh) # sersemken hızlanamaz
@@ -2301,6 +2607,8 @@ func update_race(dt: float) -> void:
 				and lane_blocker(mine, rz, 3.0) == null:
 			rival_lane = mine # önümüze kırar
 			ui.toast("RAKİP ÖNÜNE KIRDI!", Color(1.0, 0.45, 0.35))
+		elif absf(gap) < 4.0 and absi(mine - rival_lane) == 1 and mine >= 2 and randf() < (0.5 if distance < 300.0 else 0.15):
+			rival_lane = mine # yan yanayken üstümüze kırar: sürtüşme (başlangıçta sık)
 	var blk2 := lane_blocker(rival_lane, rz, 0.0)
 	if blk2 != null and rz - blk2.position.z < 30.0 and blk2.get_meta("dir") > 0:
 		target = minf(target, LANE_KMH[blk2.get_meta("lane")]) # boş şerit yoksa arkasında yavaşlar
@@ -2349,12 +2657,67 @@ func update_race(dt: float) -> void:
 		play("crash", 1.3, -10.0)
 	if distance >= RACE_LEN or rival_dist >= RACE_LEN:
 		race_on = false
+		finish.visible = false
 		if distance >= rival_dist:
 			score += 1500
 			play("confirm")
 			crash(null, "YARIŞI KAZANDIN", false)
 		else:
 			crash(null, "YARIŞI KAYBETTİN", false)
+
+
+# Yarışta kaza: oyun bitmez, araç durur ve 2 sn yanıp sönerek (çarpışmadan) devam eder.
+func race_wreck(c: Node3D) -> void:
+	if race_blink > 0.0:
+		return
+	race_blink = 2.0
+	bumps = 0
+	if c:
+		c.set_meta("ghost", true)
+		c.set_meta("fade", 0.0)
+	kmh = 0.0
+	nitro_t = 0.0
+	shake = 0.5
+	buzz(300, 1.0)
+	play("crash")
+	var l := lane_of(car.position.x)
+	if lane_closed(l, car.position.z): # yol çalışmasında ya da kaza yerindeyse açık şeride alınır
+		for k in [2, 1, 3, 0]:
+			if not lane_closed(k, car.position.z):
+				car.position.x = LANES[k]
+				target_x = LANES[k]
+				break
+	ui.popup("KAZA!  HIZ SIFIRLANDI", Color(1.0, 0.4, 0.35))
+
+
+# Bitiş kapısı: iki direk, dama desenli bant, BİTİŞ yazısı.
+func build_finish() -> Node3D:
+	var f := Node3D.new()
+	var post := Build.mat(Color(0.85, 0.85, 0.88), 0.5, 0.4)
+	for sx in [-1.0, 1.0]:
+		Build.box(f, Vector3(0.4, 6.0, 0.4), Vector3(sx * (ROAD_EDGE + 1.2), 3.0, 0), post)
+	var img := Image.create(16, 2, false, Image.FORMAT_RGB8)
+	for x in 16:
+		for y in 2:
+			img.set_pixel(x, y, Color.WHITE if (x + y) % 2 == 0 else Color(0.05, 0.05, 0.05))
+	var cm := StandardMaterial3D.new()
+	cm.albedo_texture = ImageTexture.create_from_image(img)
+	cm.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
+	cm.emission_enabled = true # gece de seçilsin
+	cm.emission_texture = cm.albedo_texture
+	cm.emission = Color(0.5, 0.5, 0.5)
+	Build.box(f, Vector3(ROAD_EDGE * 2.0 + 2.8, 1.0, 0.2), Vector3(0, 5.5, 0), cm)
+	var t := Label3D.new()
+	t.text = "BİTİŞ"
+	t.font_size = 160
+	t.pixel_size = 0.01
+	t.outline_size = 24
+	t.modulate = Color(1.0, 0.3, 0.3)
+	t.position = Vector3(0, 6.6, 0.15)
+	f.add_child(t)
+	f.visible = false
+	add_child(f)
+	return f
 
 
 # Yarış göstergesi: sıra, rakiple ara, kalan yol.
@@ -2377,7 +2740,7 @@ var bent: Array[Node3D] = []
 
 
 func update_curve(dt: float) -> void:
-	var allow := state != "menu" and not works_on and not tunnel_on and not incident_on and not radar_on \
+	var allow := state != "menu" and not works_on and not tunnel_on and not incident_on and not radar_on and not fallen_on \
 		and not widen_hits(travel - 50.0, travel + 450.0)
 	curve_amt = move_toward(curve_amt, 1.0 if allow else 0.0, dt * 0.2)
 	# bazı yollarda: uzun dalga virajlı bölümleri açıp kapatır, kısa dalga virajın yönünü çevirir
@@ -2464,12 +2827,19 @@ func update_widen() -> void:
 			widen_a = a
 			widen_b = b
 			widen_said = 0
-			widen_side = 1 if randf() < 0.55 else -1
+			widen_side = 1 if randf() < 0.55 or dbg_fork else -1
 			set_road("widen_side", float(widen_side))
 			for seg in road_side:
 				seg.position.x = 9.8 * widen_side
 			next_widen = b + randf_range(1200.0, 2400.0)
 			next_tunnel = maxf(next_tunnel, b - 200.0)
+			# bizim yöndeki 3. şeridin bir kısmı yol ayrımı (tek yönlü yolda solda da olabilir)
+			fork_on = state == "play" and (widen_side == 1 or Profile.road == "one") and (randf() < 0.4 or dbg_fork)
+			dbg_fork = false
+			if fork_on:
+				fork_at = b - WIDEN_TAPER
+				var here := region_at(fork_at)
+				fork_dest = [Regions.FOREST, Regions.CITY, Regions.COAST].filter(func(r): return r != here).pick_random()
 			if radar_at > a - 450.0 and radar_at < b + 50.0 and not radar_on:
 				radar_at = b + 500.0
 			if Profile.mode == "time" and cp_next > a - 40.0 and cp_next < b + 40.0:
@@ -2478,20 +2848,84 @@ func update_widen() -> void:
 			next_widen = travel + 300.0
 	if widen_said == 0 and widen_a - travel < 250.0 and widen_a > travel:
 		widen_said = 1
-		ui.toast("SAĞDA 3. ŞERİT AÇILIYOR" if widen_side == 1 else "KARŞI YÖNDE 3. ŞERİT AÇILIYOR", Color(0.5, 0.9, 1.0))
+		if fork_on:
+			ui.toast("YOL AYRIMI · %s ŞERİT → %s" % ["SAĞ" if widen_side == 1 else "SOL", Regions.NAMES[fork_dest]], Color(0.5, 1.0, 0.6))
+		else:
+			ui.toast("SAĞDA 3. ŞERİT AÇILIYOR" if widen_side == 1 else "KARŞI YÖNDE 3. ŞERİT AÇILIYOR", Color(0.5, 0.9, 1.0))
 	elif widen_said == 1 and widen_b - WIDEN_TAPER - travel < 220.0:
 		widen_said = 2
-		if car.position.x * widen_side > 7.0:
+		if fork_on:
+			pass
+		elif car.position.x * widen_side > 7.0:
 			ui.toast("SAĞ ŞERİT BİTİYOR" if widen_side == 1 else "SOL ŞERİT BİTİYOR", Color(1.0, 0.75, 0.2))
 			buzz(60, 0.5)
+	update_fork()
 	set_road("widen", Vector2(travel - widen_a, travel - widen_b))
 	for seg in road_side:
 		seg.visible = wide_at(seg.position.z + 10.0) > 0.0 or wide_at(seg.position.z - 10.0) > 0.0
 
 
+# Ayrım bariyeri: şeritlerin arasına sarı-siyah ok panosu ve çarpma yastığı. Ayrılma noktasını o şeritte
+# geçersek ekran kararır, çıkışın bölgesine geçeriz; bariyere çarpmak kaza.
+func update_fork() -> void:
+	if not fork_on:
+		if fork_node:
+			fork_node.visible = false
+		return
+	if fork_node == null:
+		fork_node = Node3D.new()
+		var img := Image.create(8, 1, false, Image.FORMAT_RGB8)
+		for x in 8:
+			img.set_pixel(x, 0, Color(1.0, 0.8, 0.0) if x % 2 == 0 else Color(0.05, 0.05, 0.05))
+		var cm := StandardMaterial3D.new()
+		cm.albedo_texture = ImageTexture.create_from_image(img)
+		cm.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
+		cm.emission_enabled = true
+		cm.emission_texture = cm.albedo_texture
+		cm.emission = Color(0.6, 0.6, 0.6)
+		Build.box(fork_node, Vector3(2.2, 1.2, 0.15), Vector3(0, 1.4, 0), cm) # ok panosu
+		Build.box(fork_node, Vector3(1.0, 0.9, 1.6), Vector3(0, 0.45, 0.6), Build.mat(Color(1.0, 0.75, 0.05), 0.6)) # yastık
+		Build.box(fork_node, Vector3(0.1, 0.9, 30.0), Vector3(-0.3, 0.45, -16.0), Build.mat(Color(0.7, 0.7, 0.72), 0.5, 0.4)) # ayırıcı bariyer
+		Build.box(fork_node, Vector3(0.1, 0.9, 30.0), Vector3(0.3, 0.45, -16.0), Build.mat(Color(0.7, 0.7, 0.72), 0.5, 0.4))
+		add_child(fork_node)
+	var d := fork_at - travel
+	fork_node.visible = d < 330.0 and d > -40.0
+	fork_node.position = Vector3(7.0 * widen_side, 0, -d)
+	if state != "play":
+		return
+	var hw: float = car.get_meta("half_w")
+	if d < 0.4 and d > -32.0 and absf(car.position.x - 7.0 * widen_side) < hw + 0.3:
+		crash(null, "AYRIMA ÇARPTIN")
+		return
+	if d <= 0.0:
+		fork_on = false
+		if car.position.x * widen_side > 7.0: # çıkıştan ayrıldık
+			take_fork()
+
+
+func take_fork() -> void:
+	ui.fade()
+	await get_tree().create_timer(0.25).timeout
+	region_offset = fposmod(fork_dest * Regions.LEN - travel + 120.0, 4.0 * Regions.LEN)
+	widen_b = travel - 1.0 # yan şerit biter, araç ana yolun dış şeridine alınır
+	car.position.x = LANES[3] if widen_side == 1 else LANES[0]
+	target_x = car.position.x
+	for p in props:
+		Regions.configure(p, region_at(travel - p.position.z), region_edge(travel - p.position.z))
+		Regions.set_widen(p, widen_mode(travel - p.position.z), widen_side)
+	for c in traffic:
+		if c.position.z > -60.0:
+			c.set_meta("ghost", true)
+			c.set_meta("fade", 0.0)
+	score += 300
+	ui.popup("%s AYRILDIN · %s  +300" % ["SAĞA" if widen_side == 1 else "SOLA", Regions.NAMES[fork_dest]], Color(0.5, 1.0, 0.6))
+
+
 # z'de l şeridi yol çalışması yüzünden kapalı mı. CONTRA'da bizim iki şerit ve koniyle ayrılan dış karşı
 # şerit (0) kapalı, 1 bize verilir.
 func lane_closed(k: int, z: float) -> bool:
+	if fallen_on and k == 3 and absf((travel - z) - fallen_at) < 50.0:
+		return true
 	if incident_on and k == 3:
 		var iz := (travel - z) - incident_at
 		if iz > -60.0 and iz < INCIDENT_LEN + 20.0:
@@ -2612,12 +3046,24 @@ func update_siren(dt: float) -> void:
 		# yolunu tıkıyorsak kısa bir an arkamızda bekler; kenara çekilirsek geçer, ödül alırız
 		var dz := siren.position.z - car.position.z
 		var by_us := absf(siren.position.x - car.position.x) < side_gap(siren) + 0.3 and dz > 0.0 and dz < 14.0
+		# şeridimizde arkadan yaklaşırken selektör yapar, uyarı tekrar tekrar gelir (her kamerada görünsün)
+		var coming := absf(siren.position.x - car.position.x) < side_gap(siren) + 0.3 and dz > 0.0 and dz < 45.0
+		if coming and state == "play":
+			set_beam(siren, 4.0 if fmod(alive, 0.3) > 0.15 else 1.0)
+			flash_glow = maxf(flash_glow, 0.5 if fmod(alive, 0.3) > 0.15 else 0.0)
+			var wt: float = siren.get_meta("warn_t", 0.0) - dt
+			if wt <= 0.0:
+				wt = 1.8
+				ui.toast({"police": "POLİSE YOL VER!", "ambulance": "AMBULANSA YOL VER!", "firetruck": "İTFAİYEYE YOL VER!"}[siren.get_meta("kind", "police")], Color(1.0, 0.4, 0.4))
+			siren.set_meta("warn_t", wt)
+		elif siren.get_meta("warn_t", 0.0) > 0.0:
+			siren.set_meta("warn_t", 0.0)
+			set_beam(siren, 1.0)
 		if by_us:
 			siren.position.z = move_toward(siren.position.z, car.position.z + 12.0, 30.0 * dt)
 			if state == "play" and not siren.get_meta("blocked"):
 				siren.set_meta("blocked", true)
 				siren.set_meta("wait", 0.0)
-				ui.toast("SİRENE YOL VER!", Color(1.0, 0.4, 0.4))
 				buzz(60, 0.5)
 			siren.set_meta("wait", siren.get_meta("wait", 0.0) + dt)
 		# önü trafikle doluysa ya da 1,5 sn yol vermezsek beklemez: boş şeritten, gerekirse karşı şeritten geçer
@@ -2676,6 +3122,7 @@ func set_player_car(id: String, paint_index: int, rim_index := -1) -> void:
 	flames.clear()
 	car = make_player(id, paint_index, Profile.rim if rim_index < 0 else rim_index)
 	car.position.x = x
+	car.set_meta("id", id)
 	add_child(car)
 	build_player_extras(car.get_meta("rear"), id)
 
@@ -2697,16 +3144,17 @@ func make_player(id: String, paint_index: int, rim_index := 0) -> Node3D:
 		half_w = d.half_w
 		for mi: MeshInstance3D in model.get_children():
 			if mi.name.contains("_Body_"):
-				var bm := mi.mesh.surface_get_material(0) as BaseMaterial3D
+				var bm := (mi.material_override if mi.material_override else mi.mesh.surface_get_material(0)) as BaseMaterial3D
 				player_mat.set_shader_parameter("albedo_tex", bm.albedo_texture if bm else null)
-		player_mat.set_shader_parameter("tail_uv", Vector4.ZERO)
+				player_mat.set_shader_parameter("base_col", bm.albedo_color if bm else Color.WHITE)
+		player_mat.set_shader_parameter("tail_uv", Vector4(-1, -1, -1, -1)) # UV'siz parçalar (0,0) stop sayılıp parlıyordu
 		player_mat.set_shader_parameter("body_v", 0.0)
 		player_mat.set_shader_parameter("paint_uv", Vector4(0, 0, 1, 1))
 		root.add_child(model)
 		for mi: MeshInstance3D in model.get_children():
 			if mi.name.contains("_Body_"):
 				mi.material_override = player_mat
-		apply_rims(model, player_mat.get_shader_parameter("albedo_tex"), Profile.RIMS[rim_index])
+		apply_rims(model, rim_index)
 	elif id == "r34":
 		# R34 modeli (cars/r34.glb, CC BY, bkz. CREDITS.md)
 		model = preload("res://cars/r34.glb").instantiate()
@@ -2727,7 +3175,7 @@ func make_player(id: String, paint_index: int, rim_index := 0) -> Node3D:
 		root.add_child(model)
 		for mi in model.find_children("*", "MeshInstance3D", true, false):
 			mi.material_override = player_mat
-		apply_rims(model, player_mat.get_shader_parameter("albedo_tex"), Profile.RIMS[rim_index])
+		apply_rims(model, rim_index)
 	player_mat.set_shader_parameter("use_paint", 0.0 if paint_index == 0 else 1.0)
 	var pd: Array = Profile.PAINTS[paint_index]
 	player_mat.set_shader_parameter("paint", pd[1])
@@ -2735,8 +3183,10 @@ func make_player(id: String, paint_index: int, rim_index := 0) -> Node3D:
 	if pd.size() > 4:
 		player_mat.set_shader_parameter("paint2", pd[4])
 	add_blob(root, rear)
+	var wet: Array[Node3D] = [] # ıslak yoldaki stop yansıması: garajda platformun üstünde kalıyor, gizlenir
 	for s in [-1.0, 1.0]:
-		Build.streak(root, Vector3(s * 0.5, 0, rear), Color(1.0, 0.08, 0.04), 0.6, 7.0, 1.5)
+		wet.append(Build.streak(root, Vector3(s * 0.5, 0, rear), Color(1.0, 0.08, 0.04), 0.6, 7.0, 1.5))
+	root.set_meta("wet", wet)
 	root.set_meta("rear", rear)
 	root.set_meta("hood_y", hood_height(root, rear))
 	root.set_meta("half_w", half_w)
@@ -2787,13 +3237,14 @@ func build_player_extras(rear: float, id: String) -> void:
 	# far camları ve yola düşen ışık; garajda alınan sis farı ve Amerikan park
 	var hw: float = car.get_meta("half_w")
 	var ly := clampf(car.get_meta("hood_y") - 0.3, 0.45, 0.85)
+	lamp_glows.assign(car.get_meta("wet"))
 	for s in [-1.0, 1.0]:
-		add_glow(car, Vector3(s * (hw - 0.3), ly, -rear - 0.05), Color(1.0, 0.95, 0.85), 0.55)
-	add_beam(car, -rear, -1.0, 8.0, 32.0, Color(1.0, 0.95, 0.85), 0.28)
+		lamp_glows.append(add_glow(car, Vector3(s * (hw - 0.3), ly, -rear - 0.05), Color(1.0, 0.95, 0.85), 0.55))
+	lamp_glows.append(add_beam(car, -rear, -1.0, 8.0, 32.0, Color(1.0, 0.95, 0.85), 0.28))
 	if Profile.mod(id, "fog") == 1:
 		for s in [-1.0, 1.0]:
-			add_glow(car, Vector3(s * (hw - 0.35), 0.3, -rear - 0.05), Color(1.0, 0.8, 0.3), 0.42)
-		add_beam(car, -rear, -1.0, 9.0, 14.0, Color(1.0, 0.78, 0.3), 0.35) # alçak, geniş, sarı
+			lamp_glows.append(add_glow(car, Vector3(s * (hw - 0.35), 0.3, -rear - 0.05), Color(1.0, 0.8, 0.3), 0.42))
+		lamp_glows.append(add_beam(car, -rear, -1.0, 9.0, 14.0, Color(1.0, 0.78, 0.3), 0.35)) # alçak, geniş, sarı
 	var glow := Profile.mod(id, "glow")
 	if glow > 0: # alt neon: aracın altında yola vuran renkli ışık
 		var gm := StandardMaterial3D.new()
@@ -2803,13 +3254,13 @@ func build_player_extras(rear: float, id: String) -> void:
 		gm.disable_fog = true
 		gm.albedo_texture = glow_tex
 		gm.albedo_color = Profile.GLOW_COLORS[glow] * 1.6
-		var under := Build.plane(car, Vector2(hw * 2.0 + 2.4, rear * 2.0 + 2.0), Vector3(0, 0.06, 0), gm)
+		var under := Build.plane(car, Vector2(hw * 2.0 + 0.7, rear * 2.0 + 0.5), Vector3(0, 0.06, 0), gm)
 		under.layers = 2
 		under.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	(car.get_child(0) as Node3D).position.y = -[0.0, 0.05, 0.1][maxi(Profile.mod(id, "low"), 0)] # süspansiyon
 	if Profile.mod(id, "amber") == 1:
 		for s in [-1.0, 1.0]:
-			add_glow(car, Vector3(s * (hw - 0.04), ly - 0.05, -rear + 0.15), Color(1.0, 0.5, 0.05), 0.34) # köşe
+			lamp_glows.append(add_glow(car, Vector3(s * (hw - 0.04), ly - 0.05, -rear + 0.15), Color(1.0, 0.5, 0.05), 0.34)) # köşe
 	# arabanın kendi dolgu ışığı: lamba uzaktayken de gövde seçilsin
 	var fill := OmniLight3D.new()
 	fill.light_color = Color(0.7, 0.8, 1.0)
@@ -2921,7 +3372,8 @@ func dress_car(root: Node3D, front: float, rear: float, half_w: float, top: floa
 		if oncoming: # bizim yöndekilerin önü bize dönük değil, hâle yalnız karşıdan gelende
 			add_glow(root, Vector3(s * lx, 0.55, nose + 0.1), Color(1.0, 0.92, 0.75), 0.7, 1.0)
 			Build.streak(root, Vector3(s * lx, 0, nose), Color(1.0, 0.9, 0.7), 0.6, 10.0, 1.3)
-		else:
+		else: # stop lambası: bazı modellerin dokusundaki stop gece seçilmiyor, araç karanlıkta kayboluyordu
+			add_glow(root, Vector3(s * lx, clampf(top * 0.55, 0.55, 1.0), rear + 0.08), Color(1.0, 0.12, 0.06), 0.5, 1.0)
 			Build.streak(root, Vector3(s * lx, 0, rear), Color(1.0, 0.08, 0.04), 0.5, 7.0, 1.5)
 	var beam := add_beam(root, nose, dir, half_w * 4.4, 24.0, Color(1.0, 0.92, 0.8), 0.3)
 	beam.visible = oncoming # bizim yöndekinin ışığı önüne düşer, bize görünmez: yalnız selektörde açılır
@@ -2940,7 +3392,7 @@ func add_beam(root: Node3D, at_z: float, dir: float, width: float, length: float
 	var mi := Build.plane(root, Vector2(width, length), Vector3(0, 0.05, at_z + dir * length * 0.5), beam_mats[key])
 	mi.rotation.y = 0.0 if dir > 0.0 else PI # UV.y hep aracın önünden ışığın ucuna
 	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	mi.layers = 2
+	mi.layers = 4 # gündüz kameradan çıkarılır (update_sky): ışığı sıfırken de yolun büyük kısmını boyuyordu
 	return mi
 
 
@@ -2984,45 +3436,144 @@ func kenney_rear(model: Node3D) -> float:
 	return -(body.get_aabb().position.z + body.position.z) * model.scale.z
 
 
-# Jant: tekerlek meshleri (Kenney "wheel-*", R34 "RLW/FLW/FRW/RRW") seçilen jant modeliyle değişir, boyutuna
-# ölçeklenir; jant rengi ve kaplaması rim.gdshader'da. Yeni modelin jant yüzü +x'e bakar, sağdaki tekerlekte döner.
-const RIM_MODELS := ["", "wheel-racing", "wheel-dark", "wheel-default"]
+# Jant: desen 0'da aracın kendi tekerleği kalır. Diğerlerinde her tekerleğin meshleri (Kenney "wheel-*",
+# R34 "RLW/FLW/FRW/RRW", paket "wheel<n>_<m>") gizlenir; yerine aynı boyda lastik, kollu jant, fren diski ve
+# kaliper konur. Jant yüzü aracın dışına bakar.
+const RIM_W := 0.65 # birim tekerleğin genişliği (yarıçap 1)
+var rim_meshes := {} # jant sırası -> ArrayMesh
+var lamp_glows: Array[Node3D] = [] # oyuncunun far kartları ve huzmeleri
 
 
-func apply_rims(model: Node3D, tex: Texture2D, rim: Array) -> void:
-	var m := ShaderMaterial.new()
-	m.shader = preload("res://rim.gdshader")
-	m.set_shader_parameter("albedo_tex", tex if rim[1] == 0 else preload("res://cars/kenney/Textures/colormap.png"))
-	m.set_shader_parameter("rim_col", rim[2])
-	m.set_shader_parameter("rim_fin", rim[3])
-	var mesh: Mesh = null
-	if rim[1] > 0:
-		var scn: Node = (load("res://cars/kenney/%s.glb" % RIM_MODELS[rim[1]]) as PackedScene).instantiate()
-		mesh = (scn.find_children("*", "MeshInstance3D", true, false)[0] as MeshInstance3D).mesh
-		scn.free()
+func apply_rims(model: Node3D, rim_index: int) -> void:
+	if Profile.RIMS[rim_index][1] == 0:
+		return
+	var groups := {} # tekerlek -> [meshler, model uzayında kutu]
 	for mi: MeshInstance3D in model.find_children("*", "MeshInstance3D", true, false):
-		if not (mi.name.to_lower().begins_with("wheel") or String(mi.get_parent().name) in ["RLW", "FLW", "FRW", "RRW"]):
+		var key := ""
+		if String(mi.get_parent().name) in ["RLW", "FLW", "FRW", "RRW"]:
+			key = mi.get_parent().name
+		elif mi.name.to_lower().begins_with("wheel"):
+			key = String(mi.name).get_slice("_", 0)
+		else:
 			continue
-		if mesh == null:
-			mi.material_override = m
-			continue
-		# tekerleğin dışa baktığı yan: modelin içindeki konumunun x işareti
 		var t: Transform3D = mi.transform
 		var n := mi.get_parent()
 		while n != model and n != null:
 			t = (n as Node3D).transform * t
 			n = n.get_parent()
-		var oa := mi.get_aabb()
-		var na := mesh.get_aabb()
-		var b := Basis.from_scale(oa.size / na.size)
-		if t.origin.x < 0.0:
+		var box: AABB = t * mi.get_aabb()
+		if groups.has(key):
+			groups[key][0].append(mi)
+			groups[key][1] = (groups[key][1] as AABB).merge(box)
+		else:
+			groups[key] = [[mi], box]
+	var mesh := rim_mesh(rim_index)
+	for key in groups:
+		var box: AABB = groups[key][1]
+		var r := maxf(box.size.y, box.size.z) * 0.5
+		var b := Basis.from_scale(Vector3(box.size.x / RIM_W, r, r))
+		if box.get_center().x < 0.0:
 			b = Basis(Vector3.UP, PI) * b
 		var w := MeshInstance3D.new()
 		w.mesh = mesh
-		w.material_override = m
-		w.transform = mi.transform * Transform3D(b, oa.get_center() - b * na.get_center())
-		mi.get_parent().add_child(w)
-		mi.visible = false
+		w.transform = Transform3D(b, box.get_center())
+		model.add_child(w)
+		for mi: MeshInstance3D in groups[key][0]:
+			mi.visible = false
+
+
+# Birim tekerlek (yarıçap 1, eksen x, dış yüz +x): yuvarlak lastik, jant dudağı, kollar, göbek ve bijonlar,
+# arkada fren diski ve kaliper. Malzeme başına tek yüzey; jant başına bir kez kurulur.
+func rim_mesh(rim_index: int) -> ArrayMesh:
+	if rim_meshes.has(rim_index):
+		return rim_meshes[rim_index]
+	var rim: Array = Profile.RIMS[rim_index]
+	var style: int = rim[1]
+	var fin: int = rim[3]
+	var face := RIM_W * 0.5
+	var side := Basis(Vector3.BACK, PI * 0.5) # silindir ve simit ekseni y -> x
+	var parts := {"tire": [], "rim": [], "dark": [], "disc": [], "caliper": []}
+	var tire := TorusMesh.new()
+	tire.inner_radius = 0.64
+	tire.outer_radius = 1.0
+	tire.rings = 40
+	parts.tire.append([tire, Transform3D(side * Basis.from_scale(Vector3(1, RIM_W * 0.95 / 0.36, 1)), Vector3.ZERO)])
+	var back := CylinderMesh.new()
+	back.top_radius = 0.66
+	back.bottom_radius = 0.66
+	back.height = 0.02
+	parts.dark.append([back, Transform3D(side, Vector3(-0.15, 0, 0))])
+	var disc := CylinderMesh.new()
+	disc.top_radius = 0.5
+	disc.bottom_radius = 0.5
+	disc.height = 0.05
+	parts.disc.append([disc, Transform3D(side, Vector3(-0.02, 0, 0))])
+	var cal := BoxMesh.new()
+	cal.size = Vector3(0.1, 0.34, 0.16)
+	parts.caliper.append([cal, Transform3D(Basis(Vector3.RIGHT, PI * 0.75), Basis(Vector3.RIGHT, PI * 0.25) * Vector3(0.02, 0.42, 0))])
+	# kollar: [sayı, genişlik, kendi merkezinde dönüş, çift kol aralığı]
+	var sx := 0.12 if style == 5 else 0.2 # kolların düzlemi; derin çanakta içeride
+	var spec: Array = [[5, 0.2, 0.0, 0.0], [5, 0.2, 0.0, 0.0], [10, 0.075, 0.0, 0.0], [10, 0.045, 0.32, 0.0], [5, 0.08, 0.0, 0.13], [6, 0.13, 0.0, 0.0]][style]
+	var count: int = spec[0]
+	var twist: float = spec[2]
+	var split: float = spec[3]
+	for i in count:
+		var a := TAU * i / count
+		var sets: Array = [[a, twist], [a, -twist]] if twist > 0.0 else ([[a + split, 0.0], [a - split, 0.0]] if split > 0.0 else [[a, 0.0]])
+		for k: Array in sets:
+			var sp := BoxMesh.new()
+			sp.size = Vector3(0.09, 0.47, spec[1])
+			var bs := Basis(Vector3.RIGHT, k[0] + k[1]) * Basis(Vector3.BACK, 0.18) # hafif içbükey: göbek dışarıda
+			parts.rim.append([sp, Transform3D(bs, Basis(Vector3.RIGHT, k[0]) * Vector3(sx, 0.385, 0))])
+	var lip := TorusMesh.new()
+	lip.inner_radius = 0.5 if style == 5 else 0.6
+	lip.outer_radius = 0.7
+	lip.rings = 40
+	var lip_x := 0.25 if style == 5 else 1.2
+	parts.rim.append([lip, Transform3D(side * Basis.from_scale(Vector3(1, lip_x, 1)), Vector3(face - 0.07, 0, 0))])
+	if style == 5: # çanak duvarı: dudaktan içerideki kollara
+		var wall := CylinderMesh.new()
+		wall.top_radius = 0.56
+		wall.bottom_radius = 0.6
+		wall.height = face - 0.07 - sx
+		wall.cap_top = false
+		wall.cap_bottom = false
+		parts.rim.append([wall, Transform3D(side, Vector3((face - 0.07 + sx) * 0.5, 0, 0))])
+	var hub := CylinderMesh.new()
+	hub.top_radius = 0.15
+	hub.bottom_radius = 0.17
+	hub.height = 0.12
+	parts.rim.append([hub, Transform3D(side, Vector3(sx + 0.08, 0, 0))])
+	var cap := CylinderMesh.new()
+	cap.top_radius = 0.08
+	cap.bottom_radius = 0.08
+	cap.height = 0.04
+	parts.dark.append([cap, Transform3D(side, Vector3(sx + 0.15, 0, 0))])
+	var lug := CylinderMesh.new()
+	lug.top_radius = 0.022
+	lug.bottom_radius = 0.022
+	lug.height = 0.05
+	lug.radial_segments = 6
+	for i in 5:
+		parts.disc.append([lug, Transform3D(side, Basis(Vector3.RIGHT, TAU * i / 5.0) * Vector3(sx + 0.14, 0.115, 0))])
+	var rm := Build.mat(rim[2], [0.3, 0.12, 0.8, 0.3, 0.3][fin], [0.5, 0.9, 0.0, 0.8, 0.6][fin], 1.2 if fin == 4 else 0.0)
+	rm.cull_mode = BaseMaterial3D.CULL_DISABLED # çanağın iç duvarı dışarıdan görünsün
+	var mats := {
+		"tire": Build.mat(Color(0.03, 0.03, 0.035), 0.85),
+		"rim": rm,
+		"dark": Build.mat(Color(0.05, 0.05, 0.06), 0.6, 0.5),
+		"disc": Build.mat(Color(0.45, 0.45, 0.47), 0.35, 0.8),
+		"caliper": Build.mat(Color(0.85, 0.1, 0.06), 0.4),
+	}
+	var am := ArrayMesh.new()
+	for k in parts:
+		var stool := SurfaceTool.new()
+		for part: Array in parts[k]:
+			stool.append_from(part[0], 0, part[1])
+		stool.commit(am)
+		am.surface_set_material(am.get_surface_count() - 1, mats[k])
+	rim_meshes[rim_index] = am
+	return am
 
 
 # Kaputun yüksekliği: aracın ön %27'lik kısmındaki en yüksek köşe. Kaput kamerası bunun üstüne konur;
@@ -3226,22 +3777,40 @@ func build_garage_room() -> void:
 	var wall := Build.mat(Color(0.2, 0.21, 0.23), 0.85)
 	var shutter := Build.mat(Color(0.32, 0.34, 0.37), 0.5, 0.6)
 	var lamp := Build.mat(Color(1.0, 0.97, 0.9), 0.5, 0.0, 5.0)
-	var yellow := Build.mat(Color(1.0, 0.75, 0.1), 0.6, 0.0, 0.3)
 	Build.box(garage_room, Vector3(12, 0.1, 16), Vector3(0, 0.02, 0), floor_mat) # üstü 7 cm: yoldaki stop yansıması görünmesin
 	Build.box(garage_room, Vector3(12, 0.2, 16), Vector3(0, 5.1, 0), wall)
 	Build.box(garage_room, Vector3(12, 5.2, 0.3), Vector3(0, 2.5, -8), wall)
 	Build.box(garage_room, Vector3(12, 5.2, 0.3), Vector3(0, 2.5, 8), shutter) # kepenk
 	for sx in [-1.0, 1.0]:
 		Build.box(garage_room, Vector3(0.3, 5.2, 16), Vector3(sx * 6, 2.5, 0), wall)
-		Build.box(garage_room, Vector3(0.08, 0.01, 6.0), Vector3(sx * 1.6, 0.03, 0), yellow) # park çizgisi
+	# döner platform: araç gri bir diskin üstünde, kenarında ince ışık halkası (kamera etrafında döner)
+	var disc := CylinderMesh.new()
+	disc.top_radius = 3.2
+	disc.bottom_radius = 3.3
+	disc.height = 0.12
+	disc.radial_segments = 64
+	var turn := MeshInstance3D.new()
+	turn.mesh = disc
+	turn.material_override = Build.mat(Color(0.26, 0.27, 0.29), 0.6, 0.3)
+	turn.position.y = 0.02
+	garage_room.add_child(turn)
+	var ring := TorusMesh.new()
+	ring.inner_radius = 3.2
+	ring.outer_radius = 3.26
+	ring.rings = 64
+	var glow := MeshInstance3D.new()
+	glow.mesh = ring
+	glow.material_override = Build.mat(Color(0.85, 0.9, 1.0), 0.5, 0.0, 2.0)
+	glow.position.y = 0.08
+	garage_room.add_child(glow)
 	for i in 6: # kepenk çizgileri
 		Build.box(garage_room, Vector3(11.6, 0.06, 0.05), Vector3(0, 0.6 + i * 0.75, 7.83), Build.mat(Color(0.2, 0.21, 0.23), 0.5))
 	for z in [-4.0, 0.0, 4.0]:
 		Build.box(garage_room, Vector3(3.0, 0.05, 0.5), Vector3(0, 4.97, z), lamp)
-	for z in [-3.0, 3.0]:
+	for z in [-3.0, 3.0, 6.5]: # gündüz güneş de vuruyor; gece yalnız bunlar kalıyor, oda karanlık görünüyordu
 		var l := OmniLight3D.new()
-		l.light_energy = 2.2
-		l.omni_range = 12.0
+		l.light_energy = 4.0
+		l.omni_range = 14.0
 		l.position = Vector3(0, 4.2, z)
 		garage_room.add_child(l)
 	Build.box(garage_room, Vector3(1.3, 1.0, 0.55), Vector3(4.9, 0.5, -7.2), Build.mat(Color(0.75, 0.08, 0.06), 0.4, 0.3)) # takım dolabı

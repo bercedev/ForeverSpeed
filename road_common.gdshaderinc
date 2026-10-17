@@ -75,11 +75,19 @@ void road_surface(vec2 p, vec2 suv, float time, out vec3 albedo, out float rough
 	float dirt = smoothstep(works.x, works.x + 0.2, x) * (1.0 - smoothstep(works.y - 0.2, works.y, x))
 		* smoothstep(works.w, works.w + 2.0, p.y) * (1.0 - smoothstep(works.z - 2.0, works.z, p.y));
 
-	float damp = smoothstep(0.45, 0.75, noise(q, 4.0) * 0.7 + noise(q, 1.5) * 0.3) * wetness;
-	// su birikintisi: keskin kenarlı ayrı göller; tekerlek izlerinde (şerit ortası ±0,85 m) ve yol kenarında daha sık
+	// ıslaklık ve birikinti gürültüsü kuru yolda hiç hesaplanmaz (uniform dalı: bütün ekranda aynı yöne gider;
+	// tablette yolun yarı maliyeti buydu)
 	float rut = 0.5 + 0.5 * cos((x - 0.9) * 6.2832 / 1.75);
-	float pn = noise(q, 9.0) * 0.6 + noise(q + vec2(31.7, 0.0), 2.5) * 0.4 + rut * 0.08 + smoothstep(5.5, 7.0, abs(x)) * 0.1;
-	float puddle = smoothstep(0.69, 0.73, pn) * smoothstep(0.3, 0.7, wetness); // seyrek: yolu kaplamasın
+	float damp = 0.0;
+	float puddle = 0.0;
+	if (wetness > 0.01) {
+		damp = smoothstep(0.45, 0.75, noise(q, 4.0) * 0.7 + noise(q, 1.5) * 0.3) * wetness;
+	}
+	if (wetness > 0.3) {
+		// su birikintisi: keskin kenarlı ayrı göller; tekerlek izlerinde (şerit ortası ±0,85 m) ve yol kenarında daha sık
+		float pn = noise(q, 9.0) * 0.6 + noise(q + vec2(31.7, 0.0), 2.5) * 0.4 + rut * 0.08 + smoothstep(5.5, 7.0, abs(x)) * 0.1;
+		puddle = smoothstep(0.69, 0.73, pn) * smoothstep(0.3, 0.7, wetness); // seyrek: yolu kaplamasın
+	}
 	float grain = hash(vec2(floor(x * 30.0), mod(floor(q.y * 30.0), 27000.0)));
 
 	vec3 asphalt = vec3(0.035, 0.037, 0.042) * (0.8 + 0.4 * grain);

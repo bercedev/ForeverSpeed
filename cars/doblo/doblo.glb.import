@@ -3,13 +3,13 @@
 importer="scene"
 importer_version=1
 type="PackedScene"
-uid="uid://xam3eoqkgjvh"
-path="res://.godot/imported/wheel-racing.glb-aac380b29b0da3b8d15c202270689421.scn"
+uid="uid://c68xjjqejt2g"
+path="res://.godot/imported/doblo.glb-1d9e06939b9896610ca02d24ae77176a.scn"
 
 [deps]
 
-source_file="res://cars/kenney/wheel-racing.glb"
-dest_files=["res://.godot/imported/wheel-racing.glb-aac380b29b0da3b8d15c202270689421.scn"]
+source_file="res://cars/doblo/doblo.glb"
+dest_files=["res://.godot/imported/doblo.glb-1d9e06939b9896610ca02d24ae77176a.scn"]
 
 [params]
 
@@ -21,8 +21,8 @@ array_mesh/deduplicate_surfaces=true
 nodes/apply_root_scale=true
 nodes/root_scale=1.0
 nodes/import_as_skeleton_bones=false
-nodes/use_name_suffixes=true
-nodes/use_node_type_suffixes=true
+nodes/use_name_suffixes=false
+nodes/use_node_type_suffixes=false
 meshes/ensure_tangents=true
 meshes/generate_lods=true
 meshes/create_shadow_meshes=true

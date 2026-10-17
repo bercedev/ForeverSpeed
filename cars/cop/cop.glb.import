@@ -3,13 +3,13 @@
 importer="scene"
 importer_version=1
 type="PackedScene"
-uid="uid://wsydtfhtsjgm"
-path="res://.godot/imported/wheel-dark.glb-6e5345b5ee08c465d076de8363028ec7.scn"
+uid="uid://bgod76avosksy"
+path="res://.godot/imported/cop.glb-b1e238b28fc118dc94cbb19b2c175394.scn"
 
 [deps]
 
-source_file="res://cars/kenney/wheel-dark.glb"
-dest_files=["res://.godot/imported/wheel-dark.glb-6e5345b5ee08c465d076de8363028ec7.scn"]
+source_file="res://cars/cop/cop.glb"
+dest_files=["res://.godot/imported/cop.glb-b1e238b28fc118dc94cbb19b2c175394.scn"]
 
 [params]
 
@@ -21,8 +21,8 @@ array_mesh/deduplicate_surfaces=true
 nodes/apply_root_scale=true
 nodes/root_scale=1.0
 nodes/import_as_skeleton_bones=false
-nodes/use_name_suffixes=true
-nodes/use_node_type_suffixes=true
+nodes/use_name_suffixes=false
+nodes/use_node_type_suffixes=false
 meshes/ensure_tangents=true
 meshes/generate_lods=true
 meshes/create_shadow_meshes=true

@@ -44,12 +44,12 @@ void fragment() {
 	vec2 auv = vec2(uv.x * aspect, uv.y);
 	vec3 a = drops(auv, 10.0, TIME);
 	vec3 b = drops(auv + vec2(0.31, 0.57), 22.0, TIME * 1.3 + 4.0);
-	// yolun göründüğü orta-alt bölgede damla az: cam ıslak kalsın ama yol okunsun
-	float keep = mix(0.25, 1.0, smoothstep(0.15, 0.45, length((uv - vec2(0.5, 0.6)) * vec2(1.6, 1.0))));
+	// yolun göründüğü orta-alt bölgede damla yok: kırılan damla görüntüyü ters çevirip yolu kapatıyordu
+	float keep = smoothstep(0.2, 0.5, length((uv - vec2(0.5, 0.6)) * vec2(1.6, 1.0)));
 	a.z *= wet * keep;
 	b.z *= wet * keep;
 
-	vec2 off = a.xy * a.z * 0.05 + b.xy * b.z * 0.025;
+	vec2 off = a.xy * a.z * 0.035 + b.xy * b.z * 0.018;
 	off.x /= aspect;
 	float m = max(a.z, b.z);
 

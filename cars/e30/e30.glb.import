@@ -3,13 +3,13 @@
 importer="scene"
 importer_version=1
 type="PackedScene"
-uid="uid://cq5520p8pousj"
-path="res://.godot/imported/wheel-default.glb-c34f4c2dd3cf626eef9c1f39bf905bbf.scn"
+uid="uid://dkdlwfutoyj43"
+path="res://.godot/imported/e30.glb-fa485a57ed3d77691c53f70355029b1f.scn"
 
 [deps]
 
-source_file="res://cars/kenney/wheel-default.glb"
-dest_files=["res://.godot/imported/wheel-default.glb-c34f4c2dd3cf626eef9c1f39bf905bbf.scn"]
+source_file="res://cars/e30/e30.glb"
+dest_files=["res://.godot/imported/e30.glb-fa485a57ed3d77691c53f70355029b1f.scn"]
 
 [params]
 
@@ -21,8 +21,8 @@ array_mesh/deduplicate_surfaces=true
 nodes/apply_root_scale=true
 nodes/root_scale=1.0
 nodes/import_as_skeleton_bones=false
-nodes/use_name_suffixes=true
-nodes/use_node_type_suffixes=true
+nodes/use_name_suffixes=false
+nodes/use_node_type_suffixes=false
 meshes/ensure_tangents=true
 meshes/generate_lods=true
 meshes/create_shadow_meshes=true
