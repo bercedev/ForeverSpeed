@@ -4,7 +4,9 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 shader_type spatial;
-render_mode unshaded, blend_add, depth_draw_never, cull_disabled, shadows_disabled;
+render_mode unshaded, blend_add, depth_draw_never, cull_disabled, shadows_disabled, fog_disabled;
+// fog_disabled şart: toplamalı çizimde Godot sis rengini de ekler, ışık kenarda sönse bile bütün düzlem
+// sert kenarlı açık bir dikdörtgen olarak görünüyordu.
 
 // Farın yola düşen ışığı: gerçek ışık yerine toplamalı düzlem (telefonda ucuz). UV.y 0 aracın önü, 1 ışığın ucu;
 // araçtan uzaklaştıkça ve kenarlara doğru söner. Gece ve ıslak yolda daha belirgin.

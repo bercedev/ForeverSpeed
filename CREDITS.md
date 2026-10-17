@@ -18,4 +18,10 @@ The third-party assets below keep their own licenses.
 - Music (CC0 1.0, OpenGameArt.org; re-encoded and loudness-normalized, `audio/music/`):
   "Midnight Drive" by congusbongus · "Space City" by MintoDog · "Synth Wave" by Pro Sensory ·
   "lofi hip hop" and "Chill lofi inspired" by omfgdude · "Midnight Cruiser" by Zane Little Music.
+- Traffic and garage cars "Generic passenger car pack" by Comrade1280
+  (https://sketchfab.com/3d-models/generic-passenger-car-pack-20f9af9b8a404d5cb022ac6fe87f21f5), CC BY 4.0.
+  File: `cars/pack/car_pack.glb`; the vehicles are split, re-centred and recoloured at runtime (`pack.gd`).
+- Roadside wreck "Destroyed Car 07 (Raw Scan)" by Renafox
+  (https://sketchfab.com/3d-models/destroyed-car-07-raw-scan-916b51c7e5644eb2a6c9b3797ebb08cf), CC BY 4.0.
+  File: `cars/wreck/wreck.glb`, decimated from 2.5M to 7k triangles with a 1k texture.
 - App icon (`icon.png`): generated for this project with OpenAI image generation via Codex CLI.

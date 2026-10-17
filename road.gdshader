@@ -12,6 +12,7 @@ varying vec2 p;
 
 void vertex() {
 	p = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xz; // parçalar arasında desen kesintisiz
+	VERTEX.x += curve * p.y * p.y; // viraj: ileri gittikçe yana kıvrılır, desen bükülmemiş konumdan
 }
 
 void fragment() {

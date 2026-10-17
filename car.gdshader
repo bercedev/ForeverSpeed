@@ -35,8 +35,11 @@ void vertex() {
 	cnrm = normalize(mat3(car_inv) * mat3(MODEL_MATRIX) * NORMAL);
 }
 
+// sinüssüz hash: sin'li olanı komşu hücrelerde yuvarlama yüzünden farklı değer verip desende dikiş açıyordu
 float h3(vec3 p) {
-	return fract(sin(dot(p, vec3(12.9898, 78.233, 37.719))) * 43758.5453);
+	p = fract(p * 0.1031);
+	p += dot(p, p.zyx + 31.32);
+	return fract((p.x + p.y) * p.z);
 }
 
 float n3(vec3 p) {

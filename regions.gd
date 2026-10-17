@@ -63,23 +63,22 @@ static func _setup() -> void:
 	post.size = Vector3(0.12, 0.8, 0.12)
 	var refl := BoxMesh.new()
 	refl.size = Vector3(0.05, 0.1, 0.12)
-	# kayma: parça içinde z'ye göre ek x (0: düz, in: yakında 0 uzakta 3,5, out: tersi)
+	# her yan için düz, açılan (in: yakında 0 uzakta 3,5 m dışa) ve kapanan (out: tersi) dizi; anahtar "r", "rin", "lout"...
 	var shifts := {
-		"l": func(_z): return 0.0,
-		"r": func(_z): return 0.0,
+		"": func(_z): return 0.0,
 		"in": func(z): return WIDEN * (GAP * 0.5 - z) / GAP,
 		"out": func(z): return WIDEN * (z + GAP * 0.5) / GAP,
 	}
-	for key in shifts:
-		var s := -1.0 if key == "l" else 1.0
-		var pp := []
-		var rp := []
-		for k in int(GAP / 4.0):
-			var z := -GAP * 0.5 + 2.0 + k * 4.0
-			var dx: float = shifts[key].call(z)
-			pp.append(Vector3(s * 7.95 + dx, 0.4, z))
-			rp.append(Vector3(s * 7.72 + dx, 0.65, z))
-		_side[key] = [Build.multimesh(post, pp), Build.multimesh(refl, rp)]
+	for s in [-1.0, 1.0]:
+		for key in shifts:
+			var pp := []
+			var rp := []
+			for k in int(GAP / 4.0):
+				var z := -GAP * 0.5 + 2.0 + k * 4.0
+				var dx: float = s * shifts[key].call(z)
+				pp.append(Vector3(s * 7.95 + dx, 0.4, z))
+				rp.append(Vector3(s * 7.72 + dx, 0.65, z))
+			_side[("l" if s < 0.0 else "r") + key] = [Build.multimesh(post, pp), Build.multimesh(refl, rp)]
 	var bulb := BoxMesh.new()
 	bulb.size = Vector3(0.4, 0.4, 0.4)
 	var hp := []
@@ -116,12 +115,11 @@ static func make_chunk(i: int) -> Node3D:
 		lamp.add_child(light)
 		p.set_meta("lamp_light", light)
 	Build.streak(lamp, Vector3(s * 6.2, 0, 0), col, 1.4, 14.0, 1.2)
-	# bariyer: direkler, reflektörler ve korkuluk. Sağ taraf ayrı düğümde, 3. şerit açılınca dışa kayar.
-	var rside := Node3D.new()
-	rside.name = "rside"
-	p.add_child(rside)
+	# bariyer: direkler, reflektörler ve korkuluk. Her yan kendi düğümünde: 3. şerit açılınca o yan dışa kayar.
 	for side in ["l", "r"]:
-		var holder: Node3D = p if side == "l" else rside
+		var holder := Node3D.new()
+		holder.name = side + "side"
+		p.add_child(holder)
 		var mms: Array = []
 		for k in 2:
 			var mmi := MultiMeshInstance3D.new()
@@ -130,9 +128,8 @@ static func make_chunk(i: int) -> Node3D:
 			holder.add_child(mmi)
 			mms.append(mmi)
 		var rail := Build.box(holder, Vector3(0.12, 0.3, GAP), Vector3((-7.8 if side == "l" else 7.8), 0.65, 0), _m.rail)
-		if side == "r":
-			p.set_meta("rside_mm", mms)
-			p.set_meta("rail_r", rail)
+		p.set_meta("mm_" + side, mms)
+		p.set_meta("rail_" + side, rail)
 
 	for r in 4:
 		var g := Node3D.new()
@@ -149,26 +146,28 @@ static func make_chunk(i: int) -> Node3D:
 	return p
 
 
-# 3. şerit: 0 normal, 1 geniş, 2 bu parçada açılıyor, 3 bu parçada kapanıyor. Sağdaki direk, reflektör,
-# korkuluk ve lamba yolla birlikte dışa kayar.
-static func set_widen(p: Node3D, mode: int) -> void:
-	var rside: Node3D = p.get_node("rside")
-	var key: String = ["r", "r", "in", "out"][mode]
-	var mms: Array = p.get_meta("rside_mm")
-	for k in 2:
-		(mms[k] as MultiMeshInstance3D).multimesh = _side[key][k]
-	rside.position.x = WIDEN if mode == 1 else 0.0
-	var rail: MeshInstance3D = p.get_meta("rail_r")
+# 3. şerit: 0 normal, 1 geniş, 2 bu parçada açılıyor, 3 bu parçada kapanıyor; side +1 sağ (bizim yön),
+# -1 sol (karşı yön). O yandaki direk, reflektör, korkuluk ve lamba yolla birlikte dışa kayar, öteki yan düz.
+static func set_widen(p: Node3D, mode: int, side := 1) -> void:
 	var ang := atan2(WIDEN, GAP)
-	rail.position.x = 7.8 + (WIDEN * 0.5 if mode >= 2 else 0.0)
-	rail.rotation.y = -ang if mode == 2 else (ang if mode == 3 else 0.0)
-	rail.scale.z = 1.0 / cos(ang) if mode >= 2 else 1.0
-	if p.get_meta("lamp_right"):
-		(p.get_meta("lamp") as Node3D).position.x = [0.0, WIDEN, WIDEN * 0.5, WIDEN * 0.5][mode]
-	var wall: MeshInstance3D = p.get_node("r%d" % COAST).get_meta("wall")
-	wall.position.x = 8.7 + [0.0, WIDEN, WIDEN * 0.5, WIDEN * 0.5][mode]
-	wall.rotation.y = rail.rotation.y
-	wall.scale.z = rail.scale.z
+	for s in [-1, 1]:
+		var m := mode if s == side else 0
+		var tag := "l" if s < 0 else "r"
+		var mms: Array = p.get_meta("mm_" + tag)
+		for k in 2:
+			(mms[k] as MultiMeshInstance3D).multimesh = _side[tag + ["", "", "in", "out"][m]][k]
+		(p.get_node(tag + "side") as Node3D).position.x = s * WIDEN if m == 1 else 0.0
+		var rail: MeshInstance3D = p.get_meta("rail_" + tag)
+		rail.position.x = s * (7.8 + (WIDEN * 0.5 if m >= 2 else 0.0))
+		rail.rotation.y = -s * ang if m == 2 else (s * ang if m == 3 else 0.0)
+		rail.scale.z = 1.0 / cos(ang) if m >= 2 else 1.0
+		if p.get_meta("lamp_right") == (s > 0):
+			(p.get_meta("lamp") as Node3D).position.x = s * [0.0, WIDEN, WIDEN * 0.5, WIDEN * 0.5][m]
+		if s > 0: # sahil duvarı yalnız sağda
+			var wall: MeshInstance3D = p.get_node("r%d" % COAST).get_meta("wall")
+			wall.position.x = 8.7 + [0.0, WIDEN, WIDEN * 0.5, WIDEN * 0.5][m]
+			wall.rotation.y = rail.rotation.y
+			wall.scale.z = rail.scale.z
 
 
 static func configure(p: Node3D, r: int) -> void:
@@ -211,7 +210,7 @@ static func _tree_mesh(trunk_mesh: Mesh, layers: Array, round: bool, trunk: Mate
 	return mesh
 
 
-# Orman: iki sıra ağaç, çoğu çam. Sağda ilk sıra 14,5 m'den başlar: 3. şerit açılınca yola taşmasın.
+# Orman: iki sıra ağaç, çoğu çam. İlk sıra 14,5 m'den başlar: 3. şerit açılınca yola taşmasın.
 static func _forest(g: Node3D, deco: Node3D) -> void:
 	for s in [-1.0, 1.0]:
 		Build.plane(g, Vector2(140, GAP), Vector3(s * 78.0, -0.05, 0), _m.grass).layers = 2
@@ -224,7 +223,7 @@ static func _forest(g: Node3D, deco: Node3D) -> void:
 		mm.instance_count = n
 		for k in n:
 			var side := -1.0 if k % 2 == 0 else 1.0
-			var near := 11.0 if side < 0.0 else 14.5
+			var near := 14.5
 			var x := side * (randf_range(near, near + 7.0) if k < n / 2 else randf_range(near + 8.0, near + 24.0))
 			var sc := randf_range(0.8, 1.5)
 			var t := Transform3D(Basis(Vector3.UP, randf() * TAU).scaled(Vector3.ONE * sc), Vector3(x, 0, randf_range(-GAP * 0.5, GAP * 0.5)))

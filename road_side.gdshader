@@ -5,7 +5,7 @@
 
 shader_type spatial;
 
-// Sağdaki 3. şerit parçası (x 8..11,6): yalnız genişleyen bölgede görünür, ötesini atar. discard ayrı bir
+// 3. şerit parçası (sağda ya da solda, |x| 8..11,6): yalnız genişleyen bölgede görünür, ötesini atar. discard ayrı bir
 // shader'da kalsın: ana yol shader'ında olsaydı bütün yolun erken derinlik testi kapanırdı.
 #include "res://road_common.gdshaderinc"
 
@@ -13,11 +13,12 @@ varying vec2 p;
 
 void vertex() {
 	p = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xz;
+	VERTEX.x += curve * p.y * p.y; // viraj: ileri gittikçe yana kıvrılır, desen bükülmemiş konumdan
 }
 
 void fragment() {
 	float wf = wide_f(p.y);
-	if (wf <= 0.0 || p.x > 7.0 + 3.5 * wf + 0.6) {
+	if (wf <= 0.0 || p.x * widen_side > 7.0 + 3.5 * wf + 0.6) {
 		discard;
 	}
 	vec3 alb;

@@ -12,12 +12,16 @@ const PATH := "user://save.cfg"
 # top: tavan hıza eklenen km/sa, accel: ivme çarpanı
 const CARS := [
 	{"id": "r34", "name": "MIDNIGHT GT", "price": 0, "top": 0.0, "accel": 0.85},
+	{"id": "p:compact", "name": "CITY HOPPER", "price": 800, "top": -5.0, "accel": 0.8},
 	{"id": "taxi", "name": "NIGHT CAB", "price": 1200, "top": 0.0, "accel": 0.85},
 	{"id": "sedan-sports", "name": "STREET SEDAN", "price": 1500, "top": 5.0, "accel": 0.9},
 	{"id": "hatchback-sports", "name": "HOT HATCH", "price": 2500, "top": 5.0, "accel": 1.0},
+	{"id": "p:coupe", "name": "COUPE GT", "price": 3000, "top": 12.0, "accel": 1.05},
 	{"id": "suv-luxury", "name": "BLACK SUV", "price": 3500, "top": 10.0, "accel": 1.0},
+	{"id": "p:suv", "name": "BIG SUV", "price": 4000, "top": 8.0, "accel": 0.95},
 	{"id": "race", "name": "RACER", "price": 5000, "top": 18.0, "accel": 1.15},
 	{"id": "police", "name": "INTERCEPTOR", "price": 6500, "top": 24.0, "accel": 1.2},
+	{"id": "p:sport", "name": "SPORT X", "price": 7500, "top": 28.0, "accel": 1.25},
 	{"id": "race-future", "name": "FUTURE", "price": 9000, "top": 32.0, "accel": 1.3},
 ]
 # Araç başına geliştirme: [ad, ilk seviye fiyatı]. Fiyat seviyeyle artar, en çok MAX_LEVEL.
@@ -60,11 +64,27 @@ const PAINTS := [
 	["KAPLAN", Color(0.95, 0.5, 0.05), 1800, 13, Color(0.03, 0.03, 0.03)],
 	["NEON DEVRE", Color(0.03, 0.03, 0.04), 2600, 14, Color(0.1, 0.95, 1.0)],
 ]
-# Araç başına aksesuar: [ad, fiyat]. Durum 0 yok, 1 var ama kapalı, 2 açık.
-const EXTRAS := {
-	"fog": ["SİS FARI", 600],
-	"amber": ["AMERİKAN PARK", 400],
+# Jant: [ad, model (0 aracın kendi jantı, 1 spor, 2 derin, 3 klasik), renk, kaplama, fiyat].
+# Kaplama rim.gdshader'daki rim_fin: 0 orijinal, 1 krom, 2 mat, 3 metalik, 4 neon.
+const RIMS := [
+	["ORİJİNAL", 0, Color(1, 1, 1), 0, 0],
+	["KROM", 0, Color(0.85, 0.87, 0.9), 1, 500],
+	["MAT SİYAH", 0, Color(0.06, 0.06, 0.07), 2, 500],
+	["ALTIN", 0, Color(1.0, 0.75, 0.25), 3, 800],
+	["SPOR", 1, Color(0.8, 0.82, 0.86), 3, 900],
+	["SPOR KIRMIZI", 1, Color(0.85, 0.08, 0.08), 3, 1100],
+	["KLASİK BEYAZ", 3, Color(0.92, 0.92, 0.94), 3, 900],
+	["DERİN SİYAH", 2, Color(0.08, 0.08, 0.09), 1, 1000],
+	["NEON MAVİ", 1, Color(0.1, 0.8, 1.0), 4, 1600],
+]
+# Araç başına modifiye: [ad, fiyat, seçenekler]. Alınınca seçenekler arasında gezilir (ilk seçenek kapalı).
+const MODS := {
+	"glow": ["ALT NEON", 900, ["KAPALI", "MAVİ", "PEMBE", "YEŞİL", "MOR", "BEYAZ"]],
+	"low": ["SÜSPANSİYON", 700, ["STANDART", "ALÇAK", "ÇOK ALÇAK"]],
+	"fog": ["SİS FARI", 600, ["KAPALI", "AÇIK"]],
+	"amber": ["AMERİKAN PARK", 400, ["KAPALI", "AÇIK"]],
 }
+const GLOW_COLORS := [Color(0, 0, 0), Color(0.15, 0.45, 1.0), Color(1.0, 0.15, 0.65), Color(0.15, 1.0, 0.4), Color(0.6, 0.2, 1.0), Color(0.9, 0.95, 1.0)]
 # tür: [metin, hedefler, ödül coin]
 const MISSIONS := {
 	"near": ["%d yakın geçiş yap", [15, 25, 40], 150],
@@ -84,18 +104,22 @@ var cars: Array = ["r34"]
 var paints: Array = [0]
 var car := "r34"
 var paint := 0
+var rims: Array = [0] # alınan jantlar
+var rim := 0
 var vibration := true
 var sound := true
 var quality := 1 # 0 düşük, 1 orta, 2 yüksek
 var fps := 60 # kare hızı sınırı: zayıf telefonda 30, iyisinde 90-120
+var auto_tuned := false # grafik ve FPS ilk açılışta telefona göre seçildi mi
 var nitro_tip := false # nitro öğreticisi bir kez gösterilir
 var upgrades := {} # araç id -> {speed, accel, brake, nitro: seviye}
-var extras := {} # araç id -> {fog, amber: 0 yok, 1 kapalı, 2 açık}
+var mods := {} # araç id -> {mod: seçili seçenek}; yoksa alınmamış
 var mode := "normal"
+var road := "two" # "two": karşıdan trafik var, "one": dört şerit de ileri
 var cam := 0
 var radio := 1
 var autostart := false # kaydedilmez: "TEKRAR" sahneyi yenileyince menüyü atlar
-var clock := 0.0 # kaydedilmez: gece-gündüz saati, sahne yenilense de akar; açılış hep gece
+var clock := 0.0 # kaydedilmez: oyun saati (0-24); açılışta gerçek saat, oyunda hızlı akar, sahne yenilense de sürer
 var day := ""
 var missions: Array = []
 
@@ -109,24 +133,37 @@ func _ready() -> void:
 		paints = cfg.get_value("p", "paints", [0])
 		car = cfg.get_value("p", "car", "r34")
 		paint = cfg.get_value("p", "paint", 0)
+		rims = cfg.get_value("p", "rims", [0])
+		rim = cfg.get_value("p", "rim", 0)
 		vibration = cfg.get_value("p", "vibration", true)
 		sound = cfg.get_value("p", "sound", true)
 		quality = cfg.get_value("p", "quality", 1)
 		fps = cfg.get_value("p", "fps", 60)
+		auto_tuned = cfg.get_value("p", "auto_tuned", false)
 		nitro_tip = cfg.get_value("p", "nitro_tip", false)
 		upgrades = cfg.get_value("p", "upgrades", {})
-		extras = cfg.get_value("p", "extras", {})
+		mods = cfg.get_value("p", "mods", {})
+		var old: Dictionary = cfg.get_value("p", "extras", {}) # eski kayıt: 1 kapalı, 2 açık
+		for id in old:
+			for k in old[id]:
+				if old[id][k] > 0 and not mods.get(id, {}).has(k):
+					var d: Dictionary = mods.get(id, {})
+					d[k] = old[id][k] - 1
+					mods[id] = d
 		mode = cfg.get_value("p", "mode", "normal")
+		road = cfg.get_value("p", "road", "two")
 		cam = cfg.get_value("p", "cam", 0)
 		radio = cfg.get_value("p", "radio", 1)
 		day = cfg.get_value("m", "day", "")
 		missions = cfg.get_value("m", "list", [])
 	refresh_missions()
+	var now := Time.get_time_dict_from_system()
+	clock = now.hour + now.minute / 60.0
 
 
 func save() -> void:
 	var cfg := ConfigFile.new()
-	for k in ["coins", "best", "cars", "paints", "car", "paint", "vibration", "sound", "quality", "fps", "nitro_tip", "upgrades", "extras", "mode", "cam", "radio"]:
+	for k in ["coins", "best", "cars", "paints", "car", "paint", "rims", "rim", "vibration", "sound", "quality", "fps", "auto_tuned", "nitro_tip", "upgrades", "mods", "mode", "road", "cam", "radio"]:
 		cfg.set_value("p", k, get(k))
 	cfg.set_value("m", "day", day)
 	cfg.set_value("m", "list", missions)
@@ -212,20 +249,33 @@ func buy_paint(i: int) -> bool:
 	return true
 
 
-func extra(id: String, key: String) -> int:
-	return extras.get(id, {}).get(key, 0)
-
-
-# Yoksa satın alır (açık gelir), varsa açar/kapatır.
-func use_extra(id: String, key: String) -> bool:
-	var st := extra(id, key)
-	if st == 0:
-		if coins < EXTRAS[key][1]:
+# Yoksa alır, varsa takar.
+func use_rim(i: int) -> bool:
+	if not (i in rims):
+		if coins < RIMS[i][4]:
 			return false
-		coins -= EXTRAS[key][1]
-	var d: Dictionary = extras.get(id, {})
-	d[key] = 1 if st == 2 else 2
-	extras[id] = d
+		coins -= RIMS[i][4]
+		rims.append(i)
+	rim = i
+	save()
+	return true
+
+
+# Seçili seçenek; -1 alınmamış.
+func mod(id: String, key: String) -> int:
+	return mods.get(id, {}).get(key, -1)
+
+
+# Yoksa satın alır (ilk açık seçenekle gelir), varsa sıradaki seçeneğe geçer.
+func use_mod(id: String, key: String) -> bool:
+	var st := mod(id, key)
+	if st < 0:
+		if coins < MODS[key][1]:
+			return false
+		coins -= MODS[key][1]
+	var d: Dictionary = mods.get(id, {})
+	d[key] = (st + 1) % MODS[key][2].size() if st >= 0 else 1
+	mods[id] = d
 	save()
 	return true
 

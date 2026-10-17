@@ -11,12 +11,13 @@ extends Node3D
 
 const Build := preload("res://build.gd")
 const Regions := preload("res://regions.gd")
+const Pack := preload("res://pack.gd")
 
 # Yol 4 şerit, şerit 3,5 m. 0-1 karşı yön (araçlar bize doğru gelir), 2-3 bizim yönümüz.
-const LANES := [-5.25, -1.75, 1.75, 5.25, 8.75] # 4: ara sıra açılan 3. şerit (bizim yön)
+const LANES := [-5.25, -1.75, 1.75, 5.25, 8.75, -8.75] # 4 ve 5: ara sıra açılan 3. şerit (bizim yön, karşı yön)
 const ONCOMING := [0, 1]
 const OURS := [2, 3]
-const LANE_KMH := [80.0, 65.0, 85.0, 60.0, 75.0] # şerit başına sabit hız: aynı şeritte araçlar üst üste binmez
+const LANE_KMH := [80.0, 65.0, 85.0, 60.0, 75.0, 75.0] # şerit başına sabit hız: aynı şeritte araçlar üst üste binmez
 const ROAD_EDGE := 7.0 # dış şerit çizgisi
 const ONCOMING_MULT := 1.5 # karşı şeritte giderken puan çarpanı
 const GEAR_FRAC := [0.0, 0.2, 0.36, 0.52, 0.68, 0.84, 1.12] # vites eşikleri, aracın tavan hızına oranla; 6. viteste nitro devri kırmızıya dayar
@@ -58,18 +59,29 @@ const MUSIC := {
 const LENS_FULL := preload("res://lens.gdshader")
 const LENS_LITE := preload("res://lens_lite.gdshader") # ekran kopyası okumaz: telefonda büyük kazanç
 # hava: [yağmur 0..1, sis yoğunluğu, şimşek]
+# rain: yağmur 0..1, fog: sis yoğunluğu, flake: ikinci parçacık (kar/dolu/toz), wind: yana iten rüzgâr
 const WEATHERS := {
-	"sağanak": [1.0, 0.016, true],
-	"çisenti": [0.4, 0.012, false],
-	"açık": [0.0, 0.008, false],
-	"sis": [0.15, 0.035, false],
+	"sağanak": {"name": "SAĞANAK", "rain": 1.0, "fog": 0.016, "thunder": true},
+	"çisenti": {"name": "ÇİSENTİ", "rain": 0.4, "fog": 0.012},
+	"açık": {"name": "AÇIK HAVA", "rain": 0.0, "fog": 0.008},
+	"sis": {"name": "SİS", "rain": 0.15, "fog": 0.035},
+	"kar": {"name": "KAR YAĞIŞI", "rain": 0.0, "fog": 0.022, "flake": "snow"},
+	"dolu": {"name": "DOLU", "rain": 0.2, "fog": 0.014, "flake": "hail", "thunder": true},
+	"fırtına": {"name": "FIRTINA", "rain": 1.0, "fog": 0.02, "thunder": true, "wind": 1.0},
+	"kum": {"name": "KUM FIRTINASI", "rain": 0.0, "fog": 0.045, "flake": "dust", "wind": 0.6},
+}
+# kar, dolu, toz: [tane boyu, düşüş hızı (m/sn), yerçekimi, ömür, renk]
+const FLAKES := {
+	"snow": [0.15, 2.5, -1.2, 2.2, Color(0.9, 0.92, 0.97, 0.9)],
+	"hail": [0.08, 26.0, -12.0, 0.9, Color(0.9, 0.95, 1.0, 0.9)],
+	"dust": [0.22, 0.3, 0.0, 1.6, Color(0.78, 0.56, 0.3, 0.35)],
 }
 # Serbest direksiyon: araba şeride kilitlenmez, parmakla kaydırılır.
 const ROAD_HALF := 6.1 # arabanın merkezinin gidebileceği en uç x (bariyerin içi)
 const DRAG_GAIN := 0.022 # parmak 1 px kayınca araba bu kadar metre yana gider (720 px genişlikte)
 const KEY_STEER := 9.0 # klavyede yana kayma hızı (m/sn)
 const MAX_BUMPS := 3 # bir oyunda bu kadar hafif çarpma kaza sayılır: köşe sıyırarak trafiği yarmak bedava olmasın
-const NEAR_GAP := 0.9 # yakın geçiş: yan boşluk bundan azsa sayılır (m)
+const NEAR_GAP := 1.1 # yakın geçiş: yan boşluk bundan azsa sayılır (m)
 const HEAVY_KMH := 50.0 # tam arkadan bu hız farkıyla bindirmek kaza; sıyırma ya da yavaş temas uyarı
 # Yol çalışması: çok önceden uyarılır, sonra bir şerit konilerle daralıp bariyerle kapanır.
 const WORK_LEN := 320.0
@@ -77,7 +89,7 @@ const WORK_TAPER := 45.0 # konilerle şeridin daraldığı bölüm
 const CONTRA := -1 # works_lane: bizim iki şerit kapalı, karşı yönün iç şeridi (1) bize verilir
 const WORK_WARN := 1500.0 # 300 km/sa'de yaklaşık 18 sn önceden
 # Gece-gündüz: gecenin çoğu, şafak, gündüz, akşam. Saat Profile'da durur, oyunlar arasında akar.
-const DAY_LEN := 300.0
+const GAME_HOUR := 20.0 # bir oyun saati 20 sn: tam gün 8 dakika
 const NIGHT_SKY := Color(0.03, 0.045, 0.08)
 const DAWN_SKY := Color(0.42, 0.26, 0.3)
 const DAY_SKY := Color(0.36, 0.42, 0.5) # yağmurlu, bulutlu gündüz
@@ -146,6 +158,10 @@ var works_arrow: Label3D
 var works_board: MeshInstance3D
 var diggers: Array[Node3D] = [] # yol çalışmasındaki kepçeler
 var lens_rect: ColorRect
+var garage_room: Node3D # garajda arabanın durduğu oda
+var garage_yaw := 0.6 # garaj kamerasının araç etrafındaki açısı
+var garage_drag_t := 0.0 # > 0 iken parmak aracı tutuyor
+var garage_spin := 0.0 # bırakılınca devam eden dönüş hızı (rad/sn)
 var loader: Node3D # yol çalışmasındaki yükleyici kepçe
 var road_side: Array[MeshInstance3D] = [] # 3. şerit parçaları
 var road_side_mat: ShaderMaterial
@@ -155,6 +171,7 @@ var widen_a := -1e9 # 3. şerit bölgesi (travel cinsinden): a'da açılmaya ba�
 var widen_b := -1e9
 var next_widen := 0.0
 var widen_said := 0 # uyarılar bir kez
+var widen_side := 1 # +1 sağda (bizim yön), -1 solda (karşı yön)
 # yarış modu: trafikte bir rakiple RACE_LEN metrelik kapışma
 const RACE_LEN := 4000.0
 const RIVAL_MODELS := ["race", "race-future", "sedan-sports", "hatchback-sports"]
@@ -172,6 +189,21 @@ var rival_stun := 0.0 # vurulunca bu kadar sn hızlanamaz, yalpalar
 var benching := false
 var weather := "sağanak"
 var weather_t := 45.0
+var flakes: GPUParticles3D # kar, dolu ya da toz
+var flakes_pm: ParticleProcessMaterial
+var flake_mat: StandardMaterial3D
+var flake_kind := ""
+var flake_level := 0.0
+var snow_level := 0.0
+var dust_level := 0.0
+var wind_level := 0.0
+var gust := 0.0 # rüzgârın o anki yana itişi (m/sn)
+var snow_tint := -1.0 # çimenlerin en son hangi kar düzeyine boyandığı
+# yoldaki toplanabilirler: coin dizileri ve pembe nitro taşları
+var pickups: Array[Node3D] = []
+var since_pick := 0.0
+var next_pick := 220.0
+var run_coins := 0 # bu oyunda yoldan toplanan coin
 var rain_level := 1.0
 var wetness := 1.0
 var flash_t := 99.0
@@ -213,6 +245,8 @@ var track := 0
 var wipe := 1.0 # kokpitte silecek geçtikçe camdaki damlalar azalır
 var wipe_phase := 0.0
 var paused := false
+const RESUME_SLOW := 1.2 # duraklatmadan dönünce ağır çekimin gerçek süresi (sn)
+var resume_t := 0.0
 var max_scale := 1.0 # grafik ayarının izin verdiği en yüksek 3B çözünürlük
 var perf_t := 0.0
 var perf_good := 0
@@ -225,6 +259,10 @@ var core_mat: StandardMaterial3D
 var spray: GPUParticles3D
 var cam: Camera3D
 var env: Environment
+var sky_mat: ShaderMaterial # gökyüzü: yıldız, güneş, bulut
+var sky_t := 0.0
+var sky_flash := 0.0
+var cloud_off := Vector2.ZERO
 var moon: DirectionalLight3D
 var rain: GPUParticles3D
 var rain_pm: ParticleProcessMaterial
@@ -276,6 +314,7 @@ func _ready() -> void:
 	load_stats()
 	build_world()
 	build_reflection()
+	build_garage_room()
 	for i in PROP_COUNT:
 		var p := Regions.make_chunk(i)
 		p.position.z = 30.0 - i * Regions.GAP
@@ -287,8 +326,13 @@ func _ready() -> void:
 	# her beş araçtan biri kamyon
 	for i in 28:
 		var oncoming := i >= 18
-		var c := make_kenney(TRUCK_MODELS.pick_random(), oncoming, TRUCK_SCALE) if i % 5 == 0 \
-			else make_kenney(TRAFFIC_MODELS.pick_random(), oncoming)
+		var c: Node3D
+		if i % 5 == 0:
+			c = make_kenney(TRUCK_MODELS.pick_random(), oncoming, TRUCK_SCALE)
+		elif i % 2 == 0: # yarısı gerçekçi araç paketinden
+			c = make_pack_car(Pack.names().pick_random(), oncoming)
+		else:
+			c = make_kenney(TRAFFIC_MODELS.pick_random(), oncoming)
 		c.visible = false
 		add_child(c)
 		(pool_on if oncoming else pool).append(c)
@@ -297,12 +341,17 @@ func _ready() -> void:
 	build_audio()
 	build_tunnel()
 	build_works()
+	build_incident()
 	build_sirens()
 	build_gate()
 	build_radar()
 	build_music()
 	build_rain()
+	build_flakes()
+	build_pickups()
 	build_lens()
+	if not Profile.auto_tuned:
+		auto_tune()
 	apply_settings()
 	get_tree().quit_on_go_back = false # geri tuşu on_back'e gider, uygulamayı kapatmaz
 	ui = preload("res://ui.gd").new()
@@ -313,6 +362,52 @@ func _ready() -> void:
 	else:
 		ui.show_menu()
 	warm(true)
+	if OS.is_debug_build(): # test: godot -- weather=kar play
+		for arg in OS.get_cmdline_user_args():
+			if arg.begins_with("weather="):
+				weather = arg.substr(8)
+				rain_level = WEATHERS[weather].rain
+				wetness = maxf(rain_level, 0.2)
+			elif arg.begins_with("mode="):
+				Profile.mode = arg.substr(5)
+			elif arg.begins_with("road="):
+				Profile.road = arg.substr(5)
+			elif arg.begins_with("q="):
+				Profile.quality = int(arg.substr(2))
+				apply_settings()
+			elif arg.begins_with("clock="):
+				Profile.clock = float(arg.substr(6))
+			elif arg.begins_with("rim="):
+				set_player_car(Profile.car, Profile.paint, int(arg.substr(4)))
+			elif arg == "incident":
+				incident_on = true
+				incident_at = travel + 19.0
+			elif arg == "garage":
+				ui.open_garage()
+			elif arg.begins_with("curve="):
+				curve_force = float(arg.substr(6))
+			elif arg == "pause":
+				get_tree().create_timer(1.0).timeout.connect(func(): set_pause(true))
+			elif arg.begins_with("cam="):
+				Profile.cam = int(arg.substr(4))
+			elif arg.begins_with("gtab="):
+				ui.pick_tab(int(arg.substr(5)))
+			elif arg.begins_with("car="):
+				set_player_car(arg.substr(4), Profile.paint)
+			elif arg.begins_with("shot="): # shot=dosya[:sn]: o kadar sn sonra ekranı kaydedip çıkar
+				var parts := arg.substr(5).split(":")
+				var path := parts[0]
+				get_tree().create_timer(float(parts[1]) if parts.size() > 1 else 2.5).timeout.connect(func():
+					get_viewport().get_texture().get_image().save_png(path)
+					get_tree().quit())
+			elif arg == "play":
+				start_run()
+			elif arg.begins_with("widen="): # widen=-1: karşı yönde hemen 3. şerit
+				widen_side = int(arg.substr(6))
+				set_road("widen_side", float(widen_side))
+				for seg in road_side:
+					seg.position.x = 9.8 * widen_side
+				dbg_widen()
 	if OS.is_debug_build() and FileAccess.file_exists("user://bench"):
 		DirAccess.remove_absolute("user://bench")
 		bench()
@@ -325,7 +420,7 @@ func dbg_region(r: int) -> void:
 	region_offset = fposmod(r * Regions.LEN - travel + 200.0, 4.0 * Regions.LEN)
 	for p in props:
 		Regions.configure(p, region_at(travel - p.position.z))
-		Regions.set_widen(p, widen_mode(travel - p.position.z))
+		Regions.set_widen(p, widen_mode(travel - p.position.z), widen_side)
 
 
 # Test: hemen önümüzde 3. şerit açar (yalnız debug).
@@ -395,10 +490,14 @@ func bench() -> void:
 
 
 func _process(dt: float) -> void:
+	unbend() # oyun mantığı bükülmemiş (düz yol) konumlarla çalışır
 	if warmup > 0:
 		warmup -= 1
 		if warmup == 0:
 			warm(false)
+	if resume_t > 0.0:
+		resume_t -= dt / maxf(Engine.time_scale, 0.01)
+		Engine.time_scale = lerpf(1.0, 0.3, clampf(resume_t / RESUME_SLOW, 0.0, 1.0))
 	alive += dt
 	update_perf(dt)
 	update_speed(dt)
@@ -414,11 +513,13 @@ func _process(dt: float) -> void:
 		spawn_siren()
 	update_tunnel(step, dt)
 	update_works(dt)
+	update_incident(dt)
 	update_widen()
 	update_gate()
 	update_radar()
 	update_props(step)
 	update_traffic(step, dt)
+	update_pickups(step, dt)
 	if siren:
 		update_siren(dt)
 	elif not chase_on:
@@ -431,6 +532,7 @@ func _process(dt: float) -> void:
 	update_camera(dt)
 	update_reflection()
 	update_audio(dt)
+	update_curve(dt)
 	ui.update_hud()
 
 
@@ -486,10 +588,11 @@ func start_run() -> void:
 	cp_next = travel + CP_GAP
 	radar_at = travel + randf_range(800.0, 1600.0)
 	next_siren = travel + randf_range(600.0, 1200.0)
-	next_patrol = travel + randf_range(900.0, 1600.0)
+	next_patrol = travel + randf_range(2500.0, 4000.0)
 	next_widen = travel + randf_range(500.0, 1200.0)
 	if Profile.mode == "race":
 		start_race()
+	set_road("oneway", 1.0 if Profile.road == "one" else 0.0)
 	ui.show_play()
 
 
@@ -499,7 +602,7 @@ func load_stats() -> void:
 	var lv := func(k): return Profile.level(Profile.car, k)
 	stats = {
 		"top": c.top + lv.call("speed") * 8.0,
-		"accel": c.accel * (1.0 + lv.call("accel") * 0.1),
+		"accel": c.accel * (1.0 + lv.call("accel") * 0.18), # garajdaki ivme geliştirmesi belirgin hissedilsin
 		"brake": 1.0 + lv.call("brake") * 0.15,
 		"nitro_time": NITRO_TIME + lv.call("nitro") * 0.5,
 	}
@@ -531,18 +634,18 @@ func crash(c: Node3D, reason := "KAZA", crashed := true) -> void:
 		hit_push = clampf(kmh / 3.6 * 0.3, 4.0, 18.0)
 		buzz(400, 1.0)
 		play("crash")
-	var earned := int(score / 25.0)
+	var earned := int(score / 25.0) + run_coins # yoldan toplananlar da
 	var new_best := Profile.finish_run(int(score), earned)
 	ui.show_over(int(score), distance / 1000.0, earned, new_best, reason)
 
 
 # Arabanın şu an üstünden geçtiği şeritler (iki şeridin arasındaysa ikisi de).
 func player_lanes() -> Array:
-	return [0, 1, 2, 3, 4].filter(func(k): return absf(LANES[k] - car.position.x) < 2.9)
+	return [0, 1, 2, 3, 4, 5].filter(func(k): return absf(LANES[k] - car.position.x) < 2.9)
 
 
 func fire_nitro() -> void:
-	if nitro < 0.5 or nitro_t > 0.0:
+	if nitro < 0.1 or nitro_t > 0.0:
 		return
 	close_tip()
 	nitro_t = stats.nitro_time * nitro # yarım dolu nitro yarım süre yanar
@@ -579,8 +682,6 @@ func nitro_level() -> float:
 # Skorun altındaki etiketler: karşı şerit çarpanı ve kombo.
 func hud_tags() -> String:
 	var tags := PackedStringArray()
-	if against_traffic():
-		tags.append("KARŞI ŞERİT x%.1f" % ONCOMING_MULT)
 	if combo > 1:
 		tags.append("KOMBO x%d" % combo)
 	return "  ·  ".join(tags)
@@ -613,6 +714,7 @@ func apply_settings() -> void:
 	vp.msaa_3d = [Viewport.MSAA_DISABLED, Viewport.MSAA_DISABLED, Viewport.MSAA_2X][q]
 	env.glow_enabled = q > 0
 	rain.amount = [300, 700, 1500][q]
+	flakes.amount = [500, 900, 1400][q]
 	lens_mat.shader = LENS_FULL if q == 2 else LENS_LITE
 	lens_mat.set_shader_parameter("taps", 6)
 	for p in props:
@@ -623,6 +725,37 @@ func apply_settings() -> void:
 	refl_vp.render_target_update_mode = SubViewport.UPDATE_ALWAYS if q == 2 else SubViewport.UPDATE_DISABLED
 	set_road("refl_amt", 1.0 if q == 2 else 0.0)
 	Engine.max_fps = Profile.fps
+
+
+# İlk açılış: grafik ve FPS ekran kartına göre seçilir, ilk dakikada ölçülür; tutmazsa bir kademe düşer.
+var auto_checking := false
+var auto_low := 0
+
+
+func auto_tune() -> void:
+	var q := gpu_tier()
+	var hz := roundi(DisplayServer.screen_get_refresh_rate())
+	Profile.quality = q
+	Profile.fps = (120 if hz >= 110 else (90 if hz >= 85 else 60)) if q == 2 else 60
+	Profile.auto_tuned = true
+	Profile.save()
+	auto_checking = true
+
+
+# Ekran kartı adından kaba sınıf: 2 yüksek, 1 orta, 0 düşük. Bilinmeyen telefon orta başlar, ölçüm düzeltir.
+func gpu_tier() -> int:
+	if not OS.has_feature("mobile"):
+		return 2
+	var gpu := RenderingServer.get_video_adapter_name().to_lower()
+	var m := RegEx.create_from_string("(\\d{2,4})").search(gpu)
+	var num := int(m.get_string(1)) if m else 0
+	if "adreno" in gpu:
+		return 2 if num >= 730 else (1 if num >= 640 else 0)
+	if "immortalis" in gpu or "xclipse" in gpu or "apple" in gpu:
+		return 2
+	if "mali" in gpu: # G710+ ve G77/G78 üst, G610+ ve G68 orta
+		return 2 if num >= 710 or num == 77 or num == 78 else (1 if num >= 610 or num == 68 else 0)
+	return 1
 
 
 # Dinamik çözünürlük: hedef FPS tutmazsa 3B ölçeği adım adım düşer, uzun süre tutarsa geri çıkar.
@@ -637,6 +770,16 @@ func update_perf(dt: float) -> void:
 	var hz := DisplayServer.screen_get_refresh_rate()
 	var target := float(mini(Profile.fps, roundi(hz) if hz > 0.0 else 60))
 	var vp := get_viewport()
+	if auto_checking: # otomatik ayar tutmadıysa (en düşük ölçekte bile yavaş) bir kademe düş
+		auto_low = auto_low + 1 if fps < target * 0.8 and vp.scaling_3d_scale <= 0.51 else 0
+		if auto_low >= 4 and Profile.quality > 0:
+			Profile.quality -= 1
+			Profile.save()
+			apply_settings()
+			auto_low = 0
+			ui.toast("GRAFİK: " + ["DÜŞÜK", "ORTA", "YÜKSEK"][Profile.quality], Color(0.6, 0.85, 1.0))
+		if alive > 60.0:
+			auto_checking = false
 	if fps < target * 0.9 and vp.scaling_3d_scale > 0.5:
 		vp.scaling_3d_scale = maxf(vp.scaling_3d_scale - 0.05, 0.5)
 		perf_good = 0
@@ -659,6 +802,8 @@ func set_pause(on: bool) -> void:
 	holding = false # basılı kalan fren takılmasın
 	get_tree().paused = on
 	ui.show_pause(on)
+	if not on and not tip_on:
+		resume_t = RESUME_SLOW # devam edince oyun ağır çekimden normale hızlanır, hemen kaza olmasın
 
 
 # Android geri tuşu: oyunda duraklat/devam, panelde kapat, menüde çık.
@@ -708,11 +853,29 @@ func region_at(w: float) -> int:
 
 # --- Kare güncellemeleri ---
 
+# Hızlanma (km/sa/sn): hızlandıkça düşer. Varsayılan ağır, ivme geliştirmesi ve hızlı araçlar fark yaratsın.
+func accel_rate(v: float, top: float) -> float:
+	return maxf(6.0 + 30.0 * (1.0 - v / top), 3.0)
+
+
+# Garaj için: aracın en yüksek hızı ve 0-200 süresi (geliştirmeler dahil).
+func car_numbers(id: String) -> Vector2:
+	var c := Profile.car_info(id)
+	var top: float = 230.0 + c.top + Profile.level(id, "speed") * 8.0
+	var acc: float = c.accel * (1.0 + Profile.level(id, "accel") * 0.18)
+	var v := 0.0
+	var t := 0.0
+	while v < 200.0 and t < 60.0:
+		v += accel_rate(v, top) * acc * 0.05
+		t += 0.05
+	return Vector2(top, t)
+
+
 func update_speed(dt: float) -> void:
 	if state == "over":
 		kmh = move_toward(kmh, 0.0, 400.0 * dt)
 	elif state == "menu":
-		kmh = move_toward(kmh, MENU_KMH, 60.0 * dt)
+		kmh = move_toward(kmh, 0.0 if ui.garage_open else MENU_KMH, (120.0 if ui.garage_open else 60.0) * dt) # garajda araç durur
 	else:
 		hold_time += dt
 		braking = (holding and not swiped and hold_time > 0.12) \
@@ -727,7 +890,7 @@ func update_speed(dt: float) -> void:
 		elif kmh > top:
 			kmh = move_toward(kmh, top, 40.0 * dt)
 		else:
-			kmh = move_toward(kmh, top, maxf(12.0 + 50.0 * (1.0 - kmh / top), 5.0) * stats.accel * dt) # hızlandıkça ivme düşer
+			kmh = move_toward(kmh, top, accel_rate(kmh, top) * stats.accel * dt)
 	player_mat.set_shader_parameter("tail_energy", 12.0 if braking else 4.0)
 	var g := 1
 	while g < 6 and kmh >= GEAR_FRAC[g] * top_now:
@@ -755,13 +918,18 @@ func update_run(step: float, dt: float) -> void:
 	var hard := clampf(distance / 6000.0, 0.0, 1.0)
 	if Profile.mode != "free": # serbest sürüşte trafik yok
 		since_row += step
-		if since_row > lerpf(45.0, 24.0, hard) * sparse:
+		if since_row > lerpf(45.0, 24.0, hard) * sparse * (0.7 if Profile.road == "one" else 1.0): # tek yönde karşı trafik yok: önümüz biraz daha dolu
 			since_row = 0.0
 			spawn_row()
 		since_on += step
-		if since_on > lerpf(150.0, 70.0, hard) * sparse:
+		if since_on > lerpf(150.0, 70.0, hard) * sparse and Profile.road != "one":
 			since_on = 0.0
 			spawn_oncoming()
+		since_pick += step
+		if since_pick > next_pick:
+			since_pick = 0.0
+			next_pick = randf_range(180.0, 420.0)
+			spawn_pickups()
 	if Profile.mode == "time":
 		time_left -= dt
 		if travel >= cp_next:
@@ -830,7 +998,7 @@ func update_props(step: float) -> void:
 		if p.position.z > 50.0:
 			p.position.z -= PROP_COUNT * Regions.GAP
 			Regions.configure(p, region_at(travel - p.position.z))
-			Regions.set_widen(p, widen_mode(travel - p.position.z))
+			Regions.set_widen(p, widen_mode(travel - p.position.z), widen_side)
 		var covered := p.position.z < tunnel_t0 + 25.0 and p.position.z > tunnel_t1 - 5.0 # tünelin içinden süs çıkmasın
 		(p.get_meta("lamp") as Node3D).visible = not covered
 		(p.get_meta("deco") as Node3D).visible = not covered
@@ -853,6 +1021,10 @@ func update_traffic(step: float, dt: float) -> void:
 			v = maxf(kmh - 3.0, 0.0)
 			if state == "play" and c.get_meta("flash", 0.0) <= 0.0:
 				c.set_meta("flash", 1.2)
+		# dört şerit yan yana hizalanırsa en sağdaki yavaşlayıp boşluk açar
+		if dir > 0 and c.position.z < -8.0 and wall_count(c.position.z, 5.0, -1) >= road_lanes() \
+				and c.get_meta("lane") == wall_right(c.position.z, 5.0):
+			v *= 0.8
 		c.position.z += step - dir * v / 3.6 * dt
 		var fl: float = c.get_meta("flash", 0.0)
 		if fl > 0.0:
@@ -861,8 +1033,8 @@ func update_traffic(step: float, dt: float) -> void:
 			if fl - dt <= 0.0:
 				set_beam(c, 1.0)
 			flash_glow = maxf(flash_glow, 0.6 if fmod(fl, 0.3) > 0.15 else 0.0)
-		var lost: bool = (c.get_meta("lane") == 4 and wide_at(c.position.z) < 0.99) \
-			or (c.get_meta("lane") == 1 and dir > 0 and not lane_closed(2, c.position.z))
+		var lost: bool = (c.get_meta("lane") >= 4 and wide_at(c.position.z) < 0.99) \
+			or (c.get_meta("lane") == 1 and dir > 0 and Profile.road != "one" and not lane_closed(2, c.position.z))
 		if lost and not c.get_meta("ghost", false):
 			c.set_meta("ghost", true) # biten 3. şeritte kalan araç kaybolur
 			c.set_meta("fade", 0.0)
@@ -886,7 +1058,7 @@ func update_traffic(step: float, dt: float) -> void:
 					hit(c, kmh - dir * LANE_KMH[c.get_meta("lane")], before)
 			elif before < 0.0 and c.position.z - car.position.z >= 0.0:
 				near_miss(c)
-				if c == patrol and kmh > 200.0:
+				if c == patrol and kmh > 230.0 and randf() < 0.35: # devriyeyi geçmek her zaman kovalatmaz
 					traffic.erase(c)
 					start_chase()
 
@@ -897,12 +1069,12 @@ func touching(c: Node3D) -> bool:
 
 # Önden-arkadan değmeden durabileceği en küçük merkez aralığı (kamyonlar uzun).
 func len_gap(c: Node3D) -> float:
-	return c.get_meta("half_l", 2.2) + car.get_meta("half_l", 2.3) - 0.2
+	return c.get_meta("half_l", 2.2) + car.get_meta("half_l", 2.3) - 0.45
 
 
 # İki aracın yanlardan değmeden durabileceği en küçük merkez aralığı: yarım genişlikler toplamı.
 func side_gap(c: Node3D) -> float:
-	return c.get_meta("half_w", 0.95) + car.get_meta("half_w", 0.95)
+	return (c.get_meta("half_w", 0.95) + car.get_meta("half_w", 0.95)) * 0.82 # çarpışma kutusu dar: iki aracın arasından sıyrılarak geçilir
 
 
 # Temas: karşıdan gelene değmek ya da tam arkadan büyük hız farkıyla bindirmek kaza. Sıyırmak, yandan
@@ -954,7 +1126,7 @@ func near_miss(c: Node3D) -> void:
 	score += bonus
 	if nitro_t <= 0.0:
 		nitro = minf(nitro + (0.3 if head_on else 0.2), 1.0)
-	ui.popup(("KARŞIDAN YAKIN GEÇİŞ  +%d" if head_on else "YAKIN GEÇİŞ  +%d") % bonus)
+	ui.near_popup(("KARŞIDAN +%d" if head_on else "YAKIN +%d") % bonus, Color(1.0, 0.6, 0.4) if head_on else Color(1, 1, 1))
 	buzz(25, 0.4)
 	play("whoosh", randf_range(0.9, 1.2))
 	mission("near", 1)
@@ -970,6 +1142,8 @@ func update_player(dt: float) -> void:
 		target_x = clampf(target_x + keys * KEY_STEER * dt, left_limit(), right_limit()) # 3. şerit kapanınca araç kendiliğinden içeri girer
 	elif state == "menu":
 		target_x = LANES[2]
+	if state == "play":
+		target_x += gust * 0.35 * dt # fırtınada rüzgâr arabayı yana iter, karşı direksiyon gerekir
 	target_x = clampf(target_x, left_limit(), right_limit())
 	var before := car.position.x
 	car.position.x = lerpf(car.position.x, target_x, 1.0 - exp(-12.0 * dt))
@@ -1001,17 +1175,26 @@ func update_weather(dt: float) -> void:
 		keys.erase(weather)
 		weather = keys.pick_random()
 		weather_t = randf_range(35.0, 70.0)
-	var w: Array = WEATHERS[weather]
-	rain_level = move_toward(rain_level, w[0], dt * 0.12)
+		if state == "play":
+			ui.toast(WEATHERS[weather].name, Color(0.7, 0.85, 1.0))
+	var w: Dictionary = WEATHERS[weather]
+	rain_level = move_toward(rain_level, w.rain, dt * 0.12)
+	update_flakes(w, dt)
 	var wet_target := clampf(rain_level * 1.2, 0.2, 1.0)
+	if flake_kind == "snow":
+		wet_target = maxf(wet_target, 0.35 * flake_level) # karda yol çamurlu
+	elif flake_kind == "hail":
+		wet_target = maxf(wet_target, 0.6 * flake_level)
 	wetness = move_toward(wetness, wet_target, dt * (0.2 if wet_target > wetness else 0.02)) # yol geç kurur
-	env.fog_density = move_toward(env.fog_density, w[1], dt * 0.002)
+	env.fog_density = move_toward(env.fog_density, w.fog, dt * 0.002)
 	rain.amount_ratio = rain_level
+	rain.visible = not ui.garage_open # garajın içine yağmur yağmasın
+	flakes.visible = not ui.garage_open
 	RenderingServer.global_shader_parameter_set("wetness", wetness)
 	set_road("rain_amt", rain_level * (1.0 - tunnel_in))
-	lens_mat.set_shader_parameter("wet", (1.0 - tunnel_in) * rain_level * wipe)
+	lens_mat.set_shader_parameter("wet", 0.0 if ui.garage_open else (1.0 - tunnel_in) * rain_level * wipe)
 	# şimşek: iki çakan flaş, ortamı ve gökyüzünü aydınlatır
-	if w[2] and rain_level > 0.7:
+	if w.get("thunder", false) and (rain_level > 0.7 or flake_level > 0.7):
 		next_flash -= dt
 		if next_flash <= 0.0:
 			flash_t = 0.0
@@ -1022,13 +1205,183 @@ func update_weather(dt: float) -> void:
 	env.background_color = sky.lerp(Color(0.45, 0.5, 0.65), f * 0.7)
 	env.ambient_light_energy = amb_base + f * 2.5
 	moon.light_energy = sun_base + f * 3.0
+	# kumda gök ve sis turuncuya, karda açık griye döner
+	var sand := Color(0.55, 0.38, 0.2).lerp(Color(0.2, 0.13, 0.07), 1.0 - day)
+	env.fog_light_color = env.fog_light_color.lerp(sand, dust_level * 0.85).lerp(Color(0.5, 0.53, 0.58) * (0.4 + day * 0.6), snow_level * 0.5)
+	env.background_color = env.background_color.lerp(sand, dust_level * 0.85)
+	update_sky(dt, f)
+
+
+# Gökyüzü renkleri saniyede 4 kez (her değişiklik ışık haritasını yeniler), şimşek anında.
+func update_sky(dt: float, flash: float) -> void:
+	cloud_off += Vector2(0.004, 0.0015) * dt * (1.0 + wind_level * 5.0)
+	if flash > 0.01 or sky_flash > 0.0:
+		sky_flash = flash * 0.8 if flash > 0.01 else 0.0
+		sky_mat.set_shader_parameter("flash", sky_flash)
+	sky_t -= dt
+	if sky_t > 0.0:
+		return
+	sky_t = 0.25
+	var bg := env.background_color
+	sky_mat.set_shader_parameter("horizon", bg)
+	sky_mat.set_shader_parameter("zenith", bg.darkened(0.45).lerp(Color(0.16, 0.3, 0.62), day * (1.0 - rain_level) * 0.8))
+	sky_mat.set_shader_parameter("night", 1.0 - day)
+	sky_mat.set_shader_parameter("cover", clampf(0.2 + rain_level * 0.8 + flake_level * 0.6 + dust_level * 0.5, 0.0, 1.0))
+	sky_mat.set_shader_parameter("sun_dir", moon.global_transform.basis.z) # ışık -z'ye vurur, güneş +z'de
+	sky_mat.set_shader_parameter("sun_amt", day)
+	sky_mat.set_shader_parameter("cloud_off", cloud_off)
+
+
+# Kar, dolu, toz: tek parçacık sistemi; tür değişecekse önce söner, sonra yenisiyle yeniden kurulur.
+# Araç sabit, dünya akar: taneler hızımızla kameraya doğru gelir, rüzgârda yana savrulur.
+func update_flakes(w: Dictionary, dt: float) -> void:
+	var want: String = w.get("flake", "")
+	if want != flake_kind:
+		flake_level = move_toward(flake_level, 0.0, dt * 0.25)
+		if flake_level <= 0.0 and want != "":
+			flake_kind = want
+			var f: Array = FLAKES[want]
+			(flakes.draw_pass_1 as QuadMesh).size = Vector2(f[0], f[0])
+			flakes_pm.gravity = Vector3(0, f[2], 0)
+			flakes.lifetime = f[3]
+			flake_mat.albedo_color = f[4]
+		elif flake_level <= 0.0:
+			flake_kind = ""
+	elif want != "":
+		flake_level = move_toward(flake_level, 1.0, dt * 0.15)
+	flakes.amount_ratio = flake_level
+	flakes.emitting = flake_level > 0.01
+	wind_level = move_toward(wind_level, w.get("wind", 0.0), dt * 0.1)
+	gust = wind_level * (sin(alive * 0.9) * 2.0 + sin(alive * 2.3 + 1.0) * 1.2)
+	snow_level = flake_level if flake_kind == "snow" else move_toward(snow_level, 0.0, dt * 0.05)
+	dust_level = flake_level if flake_kind == "dust" else 0.0
+	if flake_kind != "":
+		var f: Array = FLAKES[flake_kind]
+		var v := Vector3(gust * (3.0 if flake_kind == "dust" else 0.6) + (14.0 if flake_kind == "dust" else 0.0) * wind_level,
+			-f[1], kmh / 3.6 * 0.55)
+		flakes_pm.direction = v.normalized()
+		flakes_pm.initial_velocity_min = v.length() * 0.9
+		flakes_pm.initial_velocity_max = v.length() * 1.1
+	set_road("snow", snow_level * (1.0 - tunnel_in))
+	if absf(snow_level - snow_tint) > 0.02: # çimen ve kaya karla beyazlaşır
+		snow_tint = snow_level
+		(Regions._m["grass"] as StandardMaterial3D).albedo_color = Color(0.01, 0.014, 0.01).lerp(Color(0.5, 0.52, 0.56), snow_level)
+		(Regions._m["rock"] as StandardMaterial3D).albedo_color = Color(0.05, 0.05, 0.055).lerp(Color(0.42, 0.44, 0.48), snow_level)
+
+
+func build_flakes() -> void:
+	flakes = GPUParticles3D.new()
+	flakes.amount = 1400
+	flakes.lifetime = 2.0
+	flakes.emitting = false
+	flakes.position = Vector3(0, 10, -24) # kameraya yakın: uzaktaki taneler sisin içinde kaybolur
+	flakes.visibility_aabb = AABB(Vector3(-20, -14, -50), Vector3(40, 30, 110))
+	flakes_pm = ParticleProcessMaterial.new()
+	flakes_pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
+	flakes_pm.emission_box_extents = Vector3(14, 8, 28)
+	flakes_pm.spread = 8.0
+	flakes_pm.collision_mode = ParticleProcessMaterial.COLLISION_HIDE_ON_CONTACT # tünelin içi kuru
+	flakes.process_material = flakes_pm
+	var q := QuadMesh.new()
+	q.size = Vector2(0.09, 0.09)
+	flake_mat = StandardMaterial3D.new()
+	flake_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	flake_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	flake_mat.billboard_mode = BaseMaterial3D.BILLBOARD_PARTICLES
+	flake_mat.albedo_texture = glow_tex # yuvarlak, yumuşak kenarlı tane
+	q.material = flake_mat
+	flakes.draw_pass_1 = q
+	add_child(flakes)
+
+
+# --- Yoldaki coin ve nitro ---
+# Ara sıra bir şeride 3-6 coinlik dizi ya da pembe bir nitro taşı konur; dünyayla birlikte akar.
+# Karşı şeride de düşebilir: risk ve ödül. Serbest sürüşte yok.
+
+func build_pickups() -> void:
+	var gold := Build.mat(Color(1.0, 0.78, 0.15), 0.3, 0.9, 2.5)
+	var pink := Build.mat(Color(1.0, 0.2, 0.75), 0.3, 0.0, 6.0)
+	var coin := CylinderMesh.new()
+	coin.top_radius = 0.42
+	coin.bottom_radius = 0.42
+	coin.height = 0.1
+	coin.radial_segments = 16
+	coin.rings = 1
+	var gem := SphereMesh.new() # 4 dilimli küre: elmas
+	gem.radius = 0.45
+	gem.height = 1.2
+	gem.radial_segments = 4
+	gem.rings = 2
+	for i in 15:
+		var nitro := i >= 12
+		var root := Node3D.new()
+		var mi := MeshInstance3D.new()
+		mi.mesh = gem if nitro else coin
+		mi.material_override = pink if nitro else gold
+		mi.rotation.x = 0.0 if nitro else PI * 0.5 # coin dik durur
+		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		root.add_child(mi)
+		add_glow(root, Vector3(0, 0, 0.3), Color(1.0, 0.25, 0.8) if nitro else Color(1.0, 0.8, 0.3), 1.6 if nitro else 1.1, 1.0)
+		root.position.y = 0.9
+		root.visible = false
+		root.set_meta("nitro", nitro)
+		add_child(root)
+		pickups.append(root)
+
+
+func spawn_pickups() -> void:
+	var lanes := ours().duplicate()
+	if wide_at(SPAWN_Z) >= 1.0:
+		lanes.append(4)
+	if randf() < 0.2 and Profile.road != "one":
+		lanes.append(1) # karşı şerit: daha riskli
+	lanes = lanes.filter(func(l): return not lane_closed(l, SPAWN_Z) and lane_blocker(l, SPAWN_Z, 12.0) == null)
+	if lanes.is_empty():
+		return
+	var l: int = lanes.pick_random()
+	var nitro := randf() < 0.3
+	var count := 1 if nitro else randi_range(3, 6)
+	for p in pickups:
+		if count == 0:
+			break
+		if p.visible or p.get_meta("nitro") != nitro:
+			continue
+		count -= 1
+		p.position = Vector3(LANES[l], 0.9, SPAWN_Z - count * 7.0)
+		p.visible = true
+
+
+func update_pickups(step: float, dt: float) -> void:
+	for p in pickups:
+		if not p.visible:
+			continue
+		p.position.z += step
+		(p.get_child(0) as Node3D).rotation.y += dt * 3.0 # yalnız model döner, parlama kameraya dönük kalır
+		p.position.y = 0.9 + sin(alive * 3.0 + p.position.z * 0.3) * 0.12
+		if p.position.z > 15.0:
+			p.visible = false
+		elif state == "play" and absf(p.position.z - car.position.z) < car.get_meta("half_l") + 0.6 \
+				and absf(p.position.x - car.position.x) < car.get_meta("half_w") + 0.5:
+			p.visible = false
+			if p.get_meta("nitro"):
+				if nitro_t > 0.0:
+					nitro_t += 1.0 # nitro yanarken uzatır
+				else:
+					nitro = minf(nitro + 0.35, 1.0)
+				ui.popup("+ NİTRO", Color(1.0, 0.35, 0.85))
+				play("boost", 1.4, -8.0)
+				buzz(30, 0.5)
+			else:
+				run_coins += 5
+				ui.popup("+5 COIN", Color(1.0, 0.82, 0.3))
+				play("click", 1.6, -4.0)
 
 
 # Gece-gündüz: gök ve sis rengi, güneş/ay, ortam ışığı, sokak lambaları ve yansımalar birlikte döner.
 func update_daylight(dt: float) -> void:
-	Profile.clock += dt
-	var ph := fmod(Profile.clock / DAY_LEN, 1.0)
-	day = smoothstep(0.4, 0.5, ph) * (1.0 - smoothstep(0.85, 0.95, ph))
+	Profile.clock = fmod(Profile.clock + dt / GAME_HOUR, 24.0) # açılışta gerçek saat
+	var h := Profile.clock
+	day = smoothstep(6.0, 7.5, h) * (1.0 - smoothstep(18.0, 19.5, h)) # 06-07:30 şafak, 18-19:30 akşam
 	var warm := 1.0 - absf(day * 2.0 - 1.0) # şafakta ve akşamda 1: gök turuncuya döner
 	sky = NIGHT_SKY.lerp(DAY_SKY.lerp(CLEAR_SKY, 1.0 - rain_level), day).lerp(DAWN_SKY, warm * 0.6)
 	env.fog_light_color = sky
@@ -1058,12 +1411,20 @@ func update_camera(dt: float) -> void:
 	shake = maxf(shake - dt, 0.0)
 	lens_nitro = move_toward(lens_nitro, boost, dt * 3.0)
 	lens_mat.set_shader_parameter("nitro", lens_nitro)
-	rain_pm.direction = Vector3(0, -1, ratio * 0.8)
+	rain_pm.direction = Vector3(gust * 0.15, -1, ratio * 0.8)
+	garage_room.visible = ui.garage_open
 	if ui.garage_open:
-		# garajda araba yandan-arkadan, yakından görünür
-		cam_pos = cam_pos.lerp(car.position + Vector3(3.6, 1.5, 5.2), k)
+		# garaj odasında: parmakla sürükleyince araç etrafında döner, bırakınca yavaşça kendi döner
+		# araç hep yavaşça döner; parmakla 1:1 çevrilir, bırakınca son hızıyla döner ve sürtünmeyle yavaşlar
+		garage_drag_t -= dt
+		if garage_drag_t <= 0.0:
+			garage_yaw += (0.12 + garage_spin) * dt
+			garage_spin *= exp(-dt * 2.2)
+		garage_room.position.x = car.position.x
+		var orbit := car.position + Vector3(sin(garage_yaw) * 5.6, 1.7, cos(garage_yaw) * 5.6)
+		cam_pos = cam_pos.lerp(orbit, 1.0 - exp(-10.0 * dt))
 		cam.position = cam_pos
-		cam.look_at(car.position + Vector3(0, 0.6, -0.5))
+		cam.look_at(car.position + Vector3(0, -1.1, 0)) # araç ekranın üst yarısında: alttaki panelin üstünde kalsın
 		cam.fov = lerpf(cam.fov, 55.0, k)
 		lens_mat.set_shader_parameter("speed", 0.0)
 		return
@@ -1079,7 +1440,7 @@ func update_camera(dt: float) -> void:
 	# yol çalışmasında kamera alçalıp yaklaşır, kapalı şeride doğru hafif yatar: bariyerler yanından akar
 	var wc := works_cam
 	var roll := deg_to_rad(3.0) * wc * (-1.0 if works_lane == 2 else 1.0)
-	var j := 0.02 * ratio * ratio + shake * 0.25 + boost * 0.03
+	var j := 0.02 * ratio * ratio + shake * 0.25 + boost * 0.03 + wind_level * 0.02 # rüzgâr kamerayı sarsar
 	var fov := 58.0 + 18.0 * ratio + boost * 8.0 + wc * 6.0
 	var top: float = car.get_meta("top", 1.3)
 	var pose: Vector3
@@ -1096,11 +1457,12 @@ func update_camera(dt: float) -> void:
 			pitch = -4.0
 			fov += 8.0
 			j *= 0.4
-		3: # kokpit
-			pose = car.position + Vector3(-0.35, top * 0.72, 0.1)
-			pitch = -3.0
-			fov += 12.0
-			j *= 0.4
+		3: # kokpit: sürücü koltuğu, göz hizası; geniş ama balık gözü olmayan sabit görüş, dönüşte hafif yatış
+			pose = car.position + Vector3(-0.33, top * 0.8, -0.15)
+			pitch = -4.0
+			fov = 74.0 + 6.0 * ratio + boost * 4.0
+			roll += clampf(-(target_x - car.position.x) * 0.02, -0.05, 0.05)
+			j *= 0.35
 		_: # takip
 			cam_x = lerpf(cam_x, car.position.x * 0.7, k)
 			pose = Vector3(cam_x, lerpf(3.3, 2.4, wc), lerpf(7.4, 6.2, wc))
@@ -1138,31 +1500,42 @@ func change_cam() -> void:
 
 
 func spawn_row() -> void:
-	var lanes := OURS.filter(func(l): return not (works_on and l == works_lane)) # kapalı şeride araç çıkmaz
+	var lanes := ours().filter(func(l): return not (works_on and l == works_lane) and not lane_closed(l, SPAWN_Z) \
+		and not lane_closed(l, SPAWN_Z - 160.0)) # kapalı şeride araç çıkmaz
 	if works_on and works_lane == CONTRA:
 		# yolu bölgeye denk gelen araç kapalı şeritlere çıkmaz; tamamen bölgedeyse bize verilen şeritte gider
 		var path_in := lane_closed(2, SPAWN_Z) or lane_closed(2, SPAWN_Z - 160.0)
 		lanes = [1] if lane_closed(2, SPAWN_Z) and lane_closed(2, SPAWN_Z - 160.0) else ([] if path_in else lanes)
 		if lanes.is_empty():
 			return
-	if wide_at(SPAWN_Z) >= 1.0 and wide_at(SPAWN_Z - 160.0) >= 1.0: # biz yetişene kadar 3. şerit sürsün
-		lanes.append(4)
+	if (widen_side == 1 or Profile.road == "one") and wide_at(SPAWN_Z) >= 1.0 and wide_at(SPAWN_Z - 160.0) >= 1.0: # biz yetişene kadar 3. şerit sürsün
+		lanes.append(4 if widen_side == 1 else 5)
 	lanes.shuffle()
 	if not patrol_active and not chase_on and travel > next_patrol and Profile.mode != "race":
 		patrol_active = true
-		next_patrol = travel + randf_range(1800.0, 3200.0)
+		next_patrol = travel + randf_range(4000.0, 7000.0)
 		place(patrol, lanes[0], 1)
 		return
 	# iki şerit birden dolarsa geçmenin yolu karşı şerit ya da fren
-	for i in (2 if randf() < 0.2 and lanes.size() == 2 else 1):
+	for i in (2 if randf() < 0.2 and lanes.size() >= 2 else 1):
 		if pool.is_empty():
 			return
-		place(pool.pop_back(), lanes[i], 1)
+		if wall_count(SPAWN_Z - 4.0, 20.0, -1) + 1 >= road_lanes(): # bütün şeritler dolacaksa çıkma: geçecek yer kalsın
+			return
+		var c: Node3D = pool.pop_back()
+		place(c, lanes[i], 1)
+		if i == 1:
+			c.position.z -= randf_range(14.0, 24.0) # yan yana duvar örmesin: aralarından sıyrılarak geçilsin
 
 
 func spawn_oncoming() -> void:
-	if not pool_on.is_empty():
-		place(pool_on.pop_back(), 0 if works_on and works_lane == CONTRA else ONCOMING.pick_random(), -1)
+	if pool_on.is_empty():
+		return
+	var lanes := ONCOMING.duplicate()
+	# karşıda 3. şerit: araç bize ulaşana kadar (yaklaşık 80 m geri gelir) şerit açık kalsın
+	if widen_side == -1 and wide_at(SPAWN_Z) >= 1.0 and wide_at(SPAWN_Z + 80.0) >= 1.0:
+		lanes.append(5)
+	place(pool_on.pop_back(), 0 if works_on and works_lane == CONTRA else lanes.pick_random(), -1)
 
 
 func place(c: Node3D, l: int, dir: int) -> void:
@@ -1241,6 +1614,121 @@ func build_tunnel() -> void:
 # --- Yol çalışması ---
 
 # Koniler, bariyerler ve sarı lambalar MultiMesh: hangi şeridin kapandığına göre configure_works dizer.
+# --- Yol kenarında kaza ---
+# Ara sıra sağ şeritte kaza yapmış bir araç durur; önünde çakarları yanan polis, öncesinde işaret fişekleri,
+# dubalar ve reflektör üçgen şeridi kapatır. Enkaz "Destroyed Car 07 (Raw Scan)" (Renafox, CC BY), Blender'da
+# 2,5 milyon üçgenden 7 bine indirildi. Ham tarama ölçeksiz ve eğik: aşağıdaki değerler köşe noktalarının
+# ana ekseninden hesaplandı (boy 14,5 birim -> 3,8 m).
+const INCIDENT_LEN := 70.0 # fişeklerin başından polisin önüne kadar
+const WRECK_C := Vector3(-0.715, -3.675, 4.195) # tarama merkezi (y: zemin)
+const WRECK_ANG := -68.45 # tarama ana ekseninin x'e açısı (derece)
+const WRECK_SCALE := 0.262
+var incident: Node3D
+var incident_police: Node3D
+var incident_on := false
+var incident_at := 0.0 # fişeklerin başladığı yer (travel cinsinden)
+var next_incident := 2500.0
+
+
+func make_wreck() -> Node3D:
+	var root := Node3D.new()
+	var w: Node3D = (load("res://cars/wreck/wreck.glb") as PackedScene).instantiate()
+	var a := deg_to_rad(WRECK_ANG)
+	var axis := Vector3(cos(a), 0, sin(a))
+	var side := Vector3(-sin(a), 0, cos(a))
+	var center := Vector3(WRECK_C.x, WRECK_C.y, WRECK_C.z) + axis * -0.37 + side * -0.16
+	var r := Basis(side, Vector3.UP, axis).transposed()
+	w.transform = Transform3D(Basis.from_scale(Vector3.ONE * WRECK_SCALE) * r, Vector3.ZERO) * Transform3D(Basis(), -center)
+	root.add_child(w)
+	return root
+
+
+func build_incident() -> void:
+	incident = Node3D.new()
+	incident.visible = false
+	var wreck := make_wreck()
+	wreck.position = Vector3(LANES[3] + 0.3, 0, -INCIDENT_LEN + 22.0)
+	wreck.rotation.y = 0.5 # şeride çapraz
+	incident.add_child(wreck)
+	incident_police = make_kenney("police")
+	add_siren_kit(incident_police, -0.33, Build.mat(Color(1.0, 0.05, 0.05), 0.5, 0.0, 10.0), Build.mat(Color(0.1, 0.25, 1.0), 0.5, 0.0, 10.0), preload("res://audio/siren.ogg"))
+	(incident_police.get_meta("snd") as AudioStreamPlayer3D).volume_db = -14.0
+	incident_police.position = Vector3(LANES[3], 0, -INCIDENT_LEN + 8.0)
+	incident_police.rotation.y = -0.15
+	incident.add_child(incident_police)
+	# reflektör üçgen
+	var tri := MeshInstance3D.new()
+	var pm := PrismMesh.new()
+	pm.size = Vector3(0.7, 0.6, 0.04)
+	tri.mesh = pm
+	tri.material_override = Build.mat(Color(1.0, 0.1, 0.05), 0.4, 0.0, 3.0)
+	tri.position = Vector3(LANES[3], 0.3, 0.0)
+	incident.add_child(tri)
+	# fişekler ve dubalar: şerit kenarından iç çizgiye çapraz
+	var cone := CylinderMesh.new()
+	cone.top_radius = 0.04
+	cone.bottom_radius = 0.24
+	cone.height = 0.75
+	var cone_mat := Build.mat(Color(1.0, 0.35, 0.05), 0.6, 0.0, 0.8)
+	for i in 8:
+		var f := i / 7.0
+		var x := ROAD_EDGE - 0.3 - (ROAD_EDGE - 3.5 - 0.6) * f
+		var z := -6.0 - f * 22.0
+		if i % 2 == 0:
+			add_glow(incident, Vector3(x, 0.15, z), Color(1.0, 0.15, 0.05), 0.9, 1.0) # fişek
+			var l := OmniLight3D.new() if i == 4 else null
+			if l:
+				l.light_color = Color(1.0, 0.2, 0.05)
+				l.light_energy = 2.0
+				l.omni_range = 10.0
+				l.position = Vector3(x, 0.4, z)
+				incident.add_child(l)
+		else:
+			var c := MeshInstance3D.new()
+			c.mesh = cone
+			c.material_override = cone_mat
+			c.position = Vector3(x, 0.37, z)
+			incident.add_child(c)
+	add_child(incident)
+
+
+func update_incident(dt: float) -> void:
+	if not incident_on:
+		if state == "play" and travel > next_incident and Profile.mode != "free" and not works_on and not tunnel_on \
+				and not widen_hits(travel + 500.0, travel + 700.0 + INCIDENT_LEN):
+			incident_on = true
+			incident_at = travel + 600.0
+			radar_at = maxf(radar_at, incident_at + INCIDENT_LEN + 200.0)
+		return
+	var d := incident_at - travel
+	incident.visible = d < 330.0
+	incident.position.z = -d
+	if incident.visible: # polis çakarı
+		var on := fmod(alive * 3.0, 1.0) < 0.5
+		(incident_police.get_meta("red") as Node3D).visible = on
+		(incident_police.get_meta("blue") as Node3D).visible = not on
+		(incident_police.get_meta("light") as OmniLight3D).light_color = Color(1.0, 0.1, 0.1) if on else Color(0.15, 0.3, 1.0)
+		var snd: AudioStreamPlayer3D = incident_police.get_meta("snd")
+		if not snd.playing:
+			snd.play()
+	if state == "play" and not works_on:
+		ui.set_works_sign(d if d > 0.0 else 0.0, "KAZA")
+	# kapalı bölge: fişekler kenardan iç çizgiye daralır, sonra şerit tümden kapalı
+	var into := -d
+	if state == "play" and into > 0.0 and into < INCIDENT_LEN:
+		var f := clampf((into - 6.0) / 22.0, 0.0, 1.0)
+		var lo := ROAD_EDGE - (ROAD_EDGE - 3.5) * f
+		var hw: float = car.get_meta("half_w")
+		if f > 0.05 and car.position.x + hw > lo + 0.3:
+			crash(null, "KAZA")
+	if into > INCIDENT_LEN + 40.0:
+		incident_on = false
+		incident.visible = false
+		(incident_police.get_meta("snd") as AudioStreamPlayer3D).stop()
+		ui.set_works_sign(-1.0)
+		next_incident = travel + randf_range(3000.0, 5500.0)
+
+
 func build_works() -> void:
 	works = Node3D.new()
 	works.visible = false
@@ -1387,7 +1875,7 @@ func configure_works(l: int) -> void:
 func start_works() -> void:
 	works_on = true
 	var r := randf()
-	works_lane = 3 if r < 0.5 else (2 if r < 0.75 else CONTRA)
+	works_lane = 3 if r < 0.5 else (2 if r < 0.75 or Profile.road == "one" else CONTRA) # tek yönde karşıdan şerit verilmez
 	works_start = travel + WORK_WARN
 	works_warned = WORK_WARN
 	works_close = 0.0
@@ -1406,8 +1894,7 @@ func update_works(dt: float) -> void:
 				next_works = travel + 300.0
 			else:
 				start_works()
-		else:
-			ui.set_warning("")
+		ui.set_works_sign(-1.0)
 		return
 	var d := works_start - travel # konilere kalan mesafe; içerideyken negatif
 	var into := -d
@@ -1428,17 +1915,17 @@ func update_works(dt: float) -> void:
 			(parts[1] as Node3D).rotation.x = 0.45 + sin(t * 0.9) * 0.2
 			(parts[2] as Node3D).rotation.x = -1.7 + sin(t * 0.9 + 1.0) * 0.35
 			(parts[3] as Node3D).rotation.x = -0.6 + sin(t * 0.9 + 2.0) * 0.5
-	var side := "SAĞ ŞERİT KAPALI" if works_lane == 3 else ("SOL ŞERİT KAPALI" if works_lane == 2 else "İKİ ŞERİT KAPALI · SOLA GEÇ")
+	var side := "SAĞ ŞERİT KAPALI" if works_lane == 3 else ("SOL ŞERİT KAPALI" if works_lane == 2 else "SOLA GEÇ")
 	if d > 0.0:
-		ui.set_warning("YOL ÇALIŞMASI  %d m\n%s" % [int(d), side], d < 300.0)
+		ui.set_works_sign(d if state == "play" else -1.0, side)
 		for mark in [1000.0, 500.0, 200.0]:
 			if d < mark and works_warned >= mark:
 				buzz(70, 0.6)
 		works_warned = minf(works_warned, d)
 	elif into < WORK_LEN:
-		ui.set_warning("YOL ÇALIŞMASI  ·  %s" % side, true)
+		ui.set_works_sign(0.0 if state == "play" else -1.0, side)
 	else:
-		ui.set_warning("")
+		ui.set_works_sign(-1.0)
 	works_cam = move_toward(works_cam, 1.0 if into > -60.0 and into < WORK_LEN + 20.0 else 0.0, dt * 1.5)
 	if state == "play" and into > 0.0 and into < WORK_LEN:
 		# kapalı bölge konilerle daralır: f 0'dan 1'e, sonra bariyer boyunca tam şerit
@@ -1464,7 +1951,7 @@ func update_works(dt: float) -> void:
 		works_on = false
 		works.visible = false
 		set_road("works", Vector4(0, 0, -1e6, -1e6))
-		ui.set_warning("")
+		ui.set_works_sign(-1.0)
 		next_works = travel + randf_range(3000.0, 5000.0)
 
 
@@ -1521,10 +2008,22 @@ func set_siren_lights(s: Node3D, on: bool) -> void:
 # Devriye trafikte sakin gider; 200 km/sa üstünde sollanırsa çakarlarını yakıp kovalar. Polis giderek
 # hızlanır: ondan yavaş gidersen yaklaşır, değerse yakalandın. 20 sn dayanır ya da açılırsan kaçtın.
 
-func start_chase() -> void:
+# Radardan çok hızlı geçince devriye 45 m arkadan çakarlarıyla çıkar.
+func radar_chase() -> void:
+	patrol_active = true
+	patrol.position = Vector3(clampf(car.position.x, -ROAD_HALF, ROAD_HALF), 0, 45.0)
+	patrol.rotation = Vector3.ZERO
+	patrol.visible = true
+	patrol.set_meta("dir", 1)
+	patrol.set_meta("ghost", false)
+	start_chase(true)
+
+
+func start_chase(from_behind := false) -> void:
 	chase_on = true
 	chase_t = CHASE_TIME
-	police_kmh = maxf(kmh - 40.0, 180.0)
+	police_kmh = kmh + 10.0 if from_behind else maxf(kmh - 40.0, 180.0)
+	patrol_want = patrol.position.x
 	set_siren_lights(patrol, true)
 	(patrol.get_meta("snd") as AudioStreamPlayer3D).play(randf() * 30.0)
 	ui.toast("POLİS PEŞİNDE!  KAÇ!", Color(1.0, 0.35, 0.35))
@@ -1542,11 +2041,14 @@ func update_chase(dt: float) -> void:
 	# boş şeride geçer, boş şerit yoksa öndeki aracın arkasında yavaşlar.
 	# seçtiği boş şeritte 1,5 sn kalır: engelin yanından geçerken iki şerit arasında gidip gelmesin
 	patrol_hold -= dt
+	if lane_of(patrol.position.x) >= 4 and wide_at(patrol.position.z - 60.0) < 1.0:
+		patrol_want = LANES[3 if widen_side == 1 else 0] # 3. şerit bitiyor: içeri gir
+		patrol_hold = 1.0
 	if patrol_hold <= 0.0:
 		var want := car.position.x if behind > 10.0 else patrol.position.x
 		if lane_blocker(lane_of(want), patrol.position.z, 2.0, patrol) != null \
 				or lane_blocker(lane_of(patrol.position.x), patrol.position.z, 2.0, patrol) != null:
-			var k := free_lane(patrol.position.z, want, false, patrol)
+			var k := free_lane(patrol.position.z, patrol.position.x, false, patrol)
 			if k >= 0:
 				want = LANES[k]
 				patrol_hold = 1.5
@@ -1556,7 +2058,8 @@ func update_chase(dt: float) -> void:
 	var b := lane_blocker(lane_of(patrol.position.x), patrol.position.z, 0.0, patrol)
 	if b != null and b.get_meta("dir") > 0 and patrol.position.z - b.position.z < len_gap(b) + 2.5:
 		patrol.position.z = b.position.z + len_gap(b) + 2.5
-	patrol.position.x = lerpf(patrol.position.x, patrol_want, 1.0 - exp(-1.5 * dt))
+	steer(patrol, patrol_want, dt, 4.0)
+	keep_on_road(patrol)
 	var on := fmod(alive * 3.0, 1.0) < 0.5
 	(patrol.get_meta("red") as Node3D).visible = on
 	(patrol.get_meta("blue") as Node3D).visible = not on
@@ -1564,7 +2067,7 @@ func update_chase(dt: float) -> void:
 	var dz := patrol.position.z - car.position.z
 	lens_mat.set_shader_parameter("siren_amt", clampf((40.0 - dz) / 30.0, 0.0, 1.0))
 	lens_mat.set_shader_parameter("siren_col", Color(1.0, 0.1, 0.1) if on else Color(0.15, 0.3, 1.0))
-	ui.set_chase("POLİS PEŞİNDE  %d SN" % ceili(chase_t))
+	ui.set_chase_sign(chase_t)
 	if dz > 0.0 and dz < len_gap(patrol) and absf(patrol.position.x - car.position.x) < side_gap(patrol):
 		end_chase(false)
 		crash(patrol, "YAKALANDIN")
@@ -1578,7 +2081,7 @@ func update_chase(dt: float) -> void:
 
 func end_chase(hide_car: bool) -> void:
 	chase_on = false
-	ui.set_chase("")
+	ui.set_chase_sign(-1.0)
 	if hide_car:
 		patrol.visible = false
 		set_siren_lights(patrol, false)
@@ -1631,6 +2134,9 @@ func update_radar() -> void:
 			ui.popup("RADAR  %d KM/SA  +%d" % [roundi(kmh), bonus], Color(1, 1, 1))
 			play("click", 0.6)
 			buzz(30, 0.4)
+			if kmh >= RADAR_MIN_KMH + 30.0 and Profile.mode in ["normal", "time"] and not chase_on and not patrol_active:
+				radar_chase()
+	ui.set_radar_sign(d if d > 0.0 and state == "play" else -1.0)
 	if d < -40.0:
 		radar_on = false
 		radar.visible = false
@@ -1712,7 +2218,7 @@ func spawn_siren() -> void:
 	siren_red = siren.get_meta("red")
 	siren_blue = siren.get_meta("blue")
 	siren_light = siren.get_meta("light")
-	var l: int = lane_of(car.position.x) if car.position.x > 0.0 else OURS.pick_random()
+	var l: int = lane_of(car.position.x) if car.position.x > 0.0 or Profile.road == "one" else OURS.pick_random()
 	siren.set_meta("lane", l)
 	siren.set_meta("dir", 1)
 	siren.set_meta("ghost", false)
@@ -1785,7 +2291,7 @@ func update_race(dt: float) -> void:
 		var blk := lane_blocker(rival_lane, rz, 3.0)
 		var behind_us := gap < -3.0 and gap > -16.0 and mine == rival_lane
 		var in_works := lane_closed(rival_lane, rz) or lane_closed(rival_lane, rz - 60.0)
-		if blk != null or in_works or (behind_us and randf() < 0.7) or (rival_lane == 4 and wide_at(rz - 80.0) < 1.0):
+		if blk != null or in_works or (behind_us and randf() < 0.7) or (rival_lane >= 4 and wide_at(rz - 80.0) < 1.0):
 			var k := free_lane(rz, rival.position.x, behind_us)
 			if k < 0 and in_works:
 				k = 1 if works_lane == CONTRA else 5 - works_lane # kapalı şeritten çıkar, gerekirse öndekinin arkasında yavaşlar
@@ -1801,11 +2307,10 @@ func update_race(dt: float) -> void:
 	rival_kmh = move_toward(rival_kmh, target, (25.0 if target > rival_kmh else 70.0) * dt)
 	rival_dist += rival_kmh / 3.6 * dt
 	gap = rival_dist - distance
-	var before_x := rival.position.x
 	rival.position.z = car.position.z - gap
-	rival.position.x = lerpf(rival.position.x, LANES[rival_lane], 1.0 - exp(-3.0 * dt))
-	rival.rotation.y = clampf((before_x - rival.position.x) / maxf(dt, 0.001) * 0.04, -0.3, 0.3) \
-		+ sin(alive * 18.0) * 0.12 * clampf(rival_stun, 0.0, 1.0) # vurulunca yalpalar
+	steer(rival, LANES[rival_lane], dt, 4.5)
+	keep_on_road(rival)
+	rival.rotation.y += sin(alive * 18.0) * 0.12 * clampf(rival_stun, 0.0, 1.0) # vurulunca yalpalar
 	# trafiğe değerse onu savurur, kendisi yavaşlar
 	for c in traffic:
 		if not c.get_meta("ghost", false) and c.visible and absf(c.position.z - rival.position.z) < len_gap(c) \
@@ -1859,6 +2364,57 @@ func race_text() -> String:
 		maxf(RACE_LEN - distance, 0.0) / 1000.0]
 
 
+# --- Viraj ---
+# Yol gerçekte düz; ileride kalan her şey uzaklığın karesiyle yana kaydırılır (x += k·z²) ve yola teğet döner.
+# Arabanın altı (z = 0) hep düz, ileride yol hafifçe sağa ya da sola kıvrılır. Mantık düz yolda çalışır:
+# kare başında kayma geri alınır, sonunda yeniden uygulanır. Uzun yapılar (yol çalışması, tünel, kaza, radar
+# tabelaları, 3. şerit) bükülmez: onlar varken viraj söner.
+const CURVE_MAX := 0.00026 # 250 m ileride yaklaşık 16 m yana
+var curve_k := 0.0
+var curve_amt := 0.0
+var curve_force := 0.0 # test: sabit viraj
+var bent: Array[Node3D] = []
+
+
+func update_curve(dt: float) -> void:
+	var allow := state != "menu" and not works_on and not tunnel_on and not incident_on and not radar_on \
+		and not widen_hits(travel - 50.0, travel + 450.0)
+	curve_amt = move_toward(curve_amt, 1.0 if allow else 0.0, dt * 0.2)
+	# bazı yollarda: uzun dalga virajlı bölümleri açıp kapatır, kısa dalga virajın yönünü çevirir
+	curve_k = CURVE_MAX * sin(travel / 650.0) * maxf(sin(travel / 2100.0 + 0.6), 0.0) * curve_amt
+	if curve_force != 0.0:
+		curve_k = curve_force
+	set_road("curve", curve_k)
+	for p in props:
+		p.position.x = curve_k * p.position.z * p.position.z
+		p.rotation.y = atan(2.0 * curve_k * p.position.z)
+	if absf(curve_k) < 1e-7:
+		return
+	var movers: Array = traffic.duplicate()
+	movers.append_array(pickups)
+	for n in [siren, rival, gate]:
+		if n != null:
+			movers.append(n)
+	for n: Node3D in movers:
+		if not n.visible or n in bent:
+			continue
+		var bx := curve_k * n.position.z * n.position.z
+		var by := atan(2.0 * curve_k * n.position.z)
+		n.position.x += bx
+		n.rotation.y += by
+		n.set_meta("bend", Vector2(bx, by))
+		bent.append(n)
+
+
+func unbend() -> void:
+	for n in bent:
+		if is_instance_valid(n):
+			var b: Vector2 = n.get_meta("bend")
+			n.position.x -= b.x
+			n.rotation.y -= b.y
+	bent.clear()
+
+
 # --- 3. şerit ---
 # Bizim yönde ara sıra sağa bir şerit açılır, bir süre sonra kapanır. Köprüde olmaz: güverte yer bırakmaz
 # (sahilde deniz duvarı da dışa kayar). Bölge sınırları çevre parçalarının sınırına denk gelir (40 m),
@@ -1888,7 +2444,7 @@ func widen_mode(w: float) -> int:
 
 
 func right_limit() -> float:
-	return ROAD_HALF + Regions.WIDEN * wide_at(car.position.z)
+	return ROAD_HALF + (Regions.WIDEN * wide_at(car.position.z) if widen_side == 1 else 0.0)
 
 
 func set_road(param: String, value: Variant) -> void:
@@ -1908,6 +2464,10 @@ func update_widen() -> void:
 			widen_a = a
 			widen_b = b
 			widen_said = 0
+			widen_side = 1 if randf() < 0.55 else -1
+			set_road("widen_side", float(widen_side))
+			for seg in road_side:
+				seg.position.x = 9.8 * widen_side
 			next_widen = b + randf_range(1200.0, 2400.0)
 			next_tunnel = maxf(next_tunnel, b - 200.0)
 			if radar_at > a - 450.0 and radar_at < b + 50.0 and not radar_on:
@@ -1918,11 +2478,11 @@ func update_widen() -> void:
 			next_widen = travel + 300.0
 	if widen_said == 0 and widen_a - travel < 250.0 and widen_a > travel:
 		widen_said = 1
-		ui.toast("SAĞDA 3. ŞERİT AÇILIYOR", Color(0.5, 0.9, 1.0))
+		ui.toast("SAĞDA 3. ŞERİT AÇILIYOR" if widen_side == 1 else "KARŞI YÖNDE 3. ŞERİT AÇILIYOR", Color(0.5, 0.9, 1.0))
 	elif widen_said == 1 and widen_b - WIDEN_TAPER - travel < 220.0:
 		widen_said = 2
-		if car.position.x > 7.0:
-			ui.toast("SAĞ ŞERİT BİTİYOR", Color(1.0, 0.75, 0.2))
+		if car.position.x * widen_side > 7.0:
+			ui.toast("SAĞ ŞERİT BİTİYOR" if widen_side == 1 else "SOL ŞERİT BİTİYOR", Color(1.0, 0.75, 0.2))
 			buzz(60, 0.5)
 	set_road("widen", Vector2(travel - widen_a, travel - widen_b))
 	for seg in road_side:
@@ -1932,6 +2492,10 @@ func update_widen() -> void:
 # z'de l şeridi yol çalışması yüzünden kapalı mı. CONTRA'da bizim iki şerit ve koniyle ayrılan dış karşı
 # şerit (0) kapalı, 1 bize verilir.
 func lane_closed(k: int, z: float) -> bool:
+	if incident_on and k == 3:
+		var iz := (travel - z) - incident_at
+		if iz > -60.0 and iz < INCIDENT_LEN + 20.0:
+			return true
 	if not works_on:
 		return false
 	var into := (travel - z) - works_start
@@ -1943,7 +2507,12 @@ func lane_closed(k: int, z: float) -> bool:
 
 
 func against_traffic() -> bool:
-	return car.position.x < 0.0 and not lane_closed(2, car.position.z)
+	return Profile.road != "one" and car.position.x < 0.0 and not lane_closed(2, car.position.z)
+
+
+# Bizim yöndeki şeritler: tek yönlü yolda dördü de.
+func ours() -> Array:
+	return [0, 1, 2, 3] if Profile.road == "one" else OURS
 
 
 # Sol sınır: CONTRA bölgesinde karşı yönü ayıran koni sırasını geçemeyiz.
@@ -1952,7 +2521,46 @@ func left_limit() -> float:
 		var into := travel - works_start
 		if into > WORK_TAPER * 0.5 and into < WORK_LEN:
 			return -3.5 + car.get_meta("half_w") + 0.2
-	return -ROAD_HALF
+	return -ROAD_HALF - (Regions.WIDEN * wide_at(car.position.z) if widen_side == -1 else 0.0)
+
+
+# Şerit değiştirme: yanal hız sınırlı (m/sn), araç gittiği yöne hafifçe döner; ışınlanır gibi kaymaz.
+func steer(n: Node3D, to_x: float, dt: float, speed: float) -> void:
+	var nx := move_toward(n.position.x, to_x, speed * dt)
+	var vx := (nx - n.position.x) / maxf(dt, 0.001)
+	n.position.x = nx
+	n.rotation.y = lerpf(n.rotation.y, clampf(-vx * 0.04, -0.2, 0.2), 1.0 - exp(-8.0 * dt))
+
+
+# Yolun z'deki genişliği: 3. şerit açıksa o yan genişler. Polis, siren ve rakip bariyerin içinden geçmesin.
+func keep_on_road(n: Node3D) -> void:
+	var w := Regions.WIDEN * wide_at(n.position.z)
+	n.position.x = clampf(n.position.x, -ROAD_HALF - (w if widen_side == -1 else 0.0), ROAD_HALF + (w if widen_side == 1 else 0.0))
+
+
+# z'nin ±win metresinde trafikle dolu farklı şerit sayısı (iki yön birlikte).
+func wall_count(z: float, win: float, skip_lane: int) -> int:
+	var seen := {}
+	for c in traffic:
+		if c.visible and not c.get_meta("ghost", false) and absf(c.position.z - z) < win and c.get_meta("lane") != skip_lane:
+			seen[c.get_meta("lane")] = true
+	return seen.size()
+
+
+# Aynı penceredeki en sağ (en büyük x) bizim yön şeridi: duvarı o açar.
+func wall_right(z: float, win: float) -> int:
+	var best := -1
+	for c in traffic:
+		if c.visible and c.get_meta("dir") > 0 and absf(c.position.z - z) < win:
+			var l: int = c.get_meta("lane")
+			if best < 0 or LANES[l] > LANES[best]:
+				best = l
+	return best
+
+
+# Yolda o an kaç şerit var (3. şerit açıksa beş).
+func road_lanes() -> int:
+	return 4 + (1 if wide_at(SPAWN_Z) > 0.5 else 0)
 
 
 func lane_of(x: float) -> int:
@@ -1977,14 +2585,15 @@ func lane_blocker(l: int, z: float, back := 6.0, skip: Node3D = null) -> Node3D:
 
 # Boş şerit: önce kendi yönümüz (from_x'e en yakın), sonra karşı şerit. -1: hiçbiri boş değil.
 # avoid_player: oyuncunun şeridine girme (dibimizdeyken önümüze kırmasın).
+# Yalnız komşu şeritler (from_x'ten en çok bir şerit öte): en sağdan karşı şeride tek hamlede atlanmaz.
 func free_lane(z: float, from_x: float, avoid_player: bool, skip: Node3D = null) -> int:
-	var ours := OURS.duplicate()
-	if wide_at(z) >= 1.0 and wide_at(z - 120.0) >= 1.0:
-		ours.append(4)
-	ours.sort_custom(func(a, b): return absf(LANES[a] - from_x) < absf(LANES[b] - from_x))
+	var cand := ours().duplicate()
+	if widen_side == 1 and wide_at(z) >= 1.0 and wide_at(z - 120.0) >= 1.0:
+		cand.append(4)
+	cand.sort_custom(func(a, b): return absf(LANES[a] - from_x) < absf(LANES[b] - from_x))
 	var mine := player_lanes()
-	for k in ours + [1, 0]:
-		if lane_closed(k, z):
+	for k in cand + [1, 0]:
+		if lane_closed(k, z) or absf(LANES[k] - from_x) > 3.6:
 			continue
 		if avoid_player and k in mine:
 			continue
@@ -2015,7 +2624,7 @@ func update_siren(dt: float) -> void:
 		if lane_blocker(l, siren.position.z) != null or (by_us and siren.get_meta("wait", 0.0) > 1.5):
 			var k := free_lane(siren.position.z, LANES[l], dz > -40.0 and dz < 30.0 and not by_us)
 			if k < 0 and l in ONCOMING:
-				k = 3 if car.position.x < 3.5 else 2 # karşıdan araç geliyor, boş yer yoksa kendi yönüne döner
+				k = 2 # karşıdan araç geliyor, boş yer yoksa kendi yönüne döner
 			if k >= 0 and k != l:
 				l = k
 				siren.set_meta("lane", l)
@@ -2024,7 +2633,11 @@ func update_siren(dt: float) -> void:
 		var b := lane_blocker(l, siren.position.z, 0.0)
 		if b != null and b.get_meta("dir") > 0 and siren.position.z - b.position.z < 9.0:
 			siren.position.z = b.position.z + 9.0
-		siren.position.x = lerpf(siren.position.x, LANES[l], 1.0 - exp(-6.0 * dt))
+		if l >= 4 and wide_at(siren.position.z - 60.0) < 1.0:
+			l = 3 if l == 4 else 0 # 3. şerit bitiyor
+			siren.set_meta("lane", l)
+		steer(siren, LANES[l], dt, 4.5)
+		keep_on_road(siren)
 		if state == "play" and Profile.mode != "free" and not siren.get_meta("ghost"):
 			if touching(siren):
 				if before > 0.6 * len_gap(siren):
@@ -2055,26 +2668,46 @@ func update_siren(dt: float) -> void:
 
 # --- Araçlar ---
 
-func set_player_car(id: String, paint_index: int) -> void:
+func set_player_car(id: String, paint_index: int, rim_index := -1) -> void:
 	var x: float = LANES[2]
 	if car:
 		x = car.position.x
 		car.queue_free()
 	flames.clear()
-	car = make_player(id, paint_index)
+	car = make_player(id, paint_index, Profile.rim if rim_index < 0 else rim_index)
 	car.position.x = x
 	add_child(car)
 	build_player_extras(car.get_meta("rear"), id)
 
 
-func make_player(id: String, paint_index: int) -> Node3D:
+func make_player(id: String, paint_index: int, rim_index := 0) -> Node3D:
 	var root := Node3D.new()
 	player_mat = ShaderMaterial.new()
 	player_mat.shader = preload("res://car.gdshader")
 	var model: Node3D
 	var rear := 2.3
 	var half_w := 0.96 # R34 gövdesi 1,92 m
-	if id == "r34":
+	if id.begins_with("p:"):
+		# araç paketinden (cars/pack, CC BY): gövde dokusu boyanır, cam ve farlar kendi malzemesiyle
+		var nm := id.substr(2)
+		model = Pack.build(nm)
+		model.rotation.y = PI
+		var d := Pack.info(nm)
+		rear = d.half_l
+		half_w = d.half_w
+		for mi: MeshInstance3D in model.get_children():
+			if mi.name.contains("_Body_"):
+				var bm := mi.mesh.surface_get_material(0) as BaseMaterial3D
+				player_mat.set_shader_parameter("albedo_tex", bm.albedo_texture if bm else null)
+		player_mat.set_shader_parameter("tail_uv", Vector4.ZERO)
+		player_mat.set_shader_parameter("body_v", 0.0)
+		player_mat.set_shader_parameter("paint_uv", Vector4(0, 0, 1, 1))
+		root.add_child(model)
+		for mi: MeshInstance3D in model.get_children():
+			if mi.name.contains("_Body_"):
+				mi.material_override = player_mat
+		apply_rims(model, player_mat.get_shader_parameter("albedo_tex"), Profile.RIMS[rim_index])
+	elif id == "r34":
 		# R34 modeli (cars/r34.glb, CC BY, bkz. CREDITS.md)
 		model = preload("res://cars/r34.glb").instantiate()
 		var m0: MeshInstance3D = model.find_children("*", "MeshInstance3D", true, false)[0]
@@ -2089,10 +2722,12 @@ func make_player(id: String, paint_index: int) -> Node3D:
 		player_mat.set_shader_parameter("tail_uv", KENNEY_TAIL)
 		player_mat.set_shader_parameter("body_v", 0.0)
 		player_mat.set_shader_parameter("paint_uv", PAINT_UV[id])
-	model.rotation.y = PI # modellerin önü +z, oyunda ön -z
-	root.add_child(model)
-	for mi in model.find_children("*", "MeshInstance3D", true, false):
-		mi.material_override = player_mat
+	if not id.begins_with("p:"):
+		model.rotation.y = PI # modellerin önü +z, oyunda ön -z
+		root.add_child(model)
+		for mi in model.find_children("*", "MeshInstance3D", true, false):
+			mi.material_override = player_mat
+		apply_rims(model, player_mat.get_shader_parameter("albedo_tex"), Profile.RIMS[rim_index])
 	player_mat.set_shader_parameter("use_paint", 0.0 if paint_index == 0 else 1.0)
 	var pd: Array = Profile.PAINTS[paint_index]
 	player_mat.set_shader_parameter("paint", pd[1])
@@ -2106,7 +2741,10 @@ func make_player(id: String, paint_index: int) -> Node3D:
 	root.set_meta("hood_y", hood_height(root, rear))
 	root.set_meta("half_w", half_w)
 	root.set_meta("half_l", rear)
-	root.set_meta("top", 1.34 if id == "r34" else (model.find_children("body", "MeshInstance3D", true, false)[0] as MeshInstance3D).get_aabb().end.y * KENNEY_SCALE.y)
+	if id.begins_with("p:"):
+		root.set_meta("top", Pack.info(id.substr(2)).top)
+	else:
+		root.set_meta("top", 1.34 if id == "r34" else (model.find_children("body", "MeshInstance3D", true, false)[0] as MeshInstance3D).get_aabb().end.y * KENNEY_SCALE.y)
 	player_mat.set_shader_parameter("car_size", Vector3(half_w, root.get_meta("top"), rear)) # desen ölçüsü
 	return root
 
@@ -2152,11 +2790,24 @@ func build_player_extras(rear: float, id: String) -> void:
 	for s in [-1.0, 1.0]:
 		add_glow(car, Vector3(s * (hw - 0.3), ly, -rear - 0.05), Color(1.0, 0.95, 0.85), 0.55)
 	add_beam(car, -rear, -1.0, 8.0, 32.0, Color(1.0, 0.95, 0.85), 0.28)
-	if Profile.extra(id, "fog") == 2:
+	if Profile.mod(id, "fog") == 1:
 		for s in [-1.0, 1.0]:
 			add_glow(car, Vector3(s * (hw - 0.35), 0.3, -rear - 0.05), Color(1.0, 0.8, 0.3), 0.42)
 		add_beam(car, -rear, -1.0, 9.0, 14.0, Color(1.0, 0.78, 0.3), 0.35) # alçak, geniş, sarı
-	if Profile.extra(id, "amber") == 2:
+	var glow := Profile.mod(id, "glow")
+	if glow > 0: # alt neon: aracın altında yola vuran renkli ışık
+		var gm := StandardMaterial3D.new()
+		gm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		gm.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+		gm.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		gm.disable_fog = true
+		gm.albedo_texture = glow_tex
+		gm.albedo_color = Profile.GLOW_COLORS[glow] * 1.6
+		var under := Build.plane(car, Vector2(hw * 2.0 + 2.4, rear * 2.0 + 2.0), Vector3(0, 0.06, 0), gm)
+		under.layers = 2
+		under.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	(car.get_child(0) as Node3D).position.y = -[0.0, 0.05, 0.1][maxi(Profile.mod(id, "low"), 0)] # süspansiyon
+	if Profile.mod(id, "amber") == 1:
 		for s in [-1.0, 1.0]:
 			add_glow(car, Vector3(s * (hw - 0.04), ly - 0.05, -rear + 0.15), Color(1.0, 0.5, 0.05), 0.34) # köşe
 	# arabanın kendi dolgu ışığı: lamba uzaktayken de gövde seçilsin
@@ -2172,6 +2823,7 @@ func glow_mat() -> StandardMaterial3D:
 	var m := StandardMaterial3D.new()
 	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	m.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+	m.disable_fog = true
 	m.cull_mode = BaseMaterial3D.CULL_DISABLED
 	return m
 
@@ -2239,23 +2891,41 @@ func make_kenney(model_name: String, oncoming := false, scale := KENNEY_SCALE) -
 	var rear := kenney_rear(model)
 	var body: MeshInstance3D = model.find_children("body", "MeshInstance3D", true, false)[0]
 	var aabb := body.get_aabb()
-	root.set_meta("top", (aabb.end.y + body.position.y) * scale.y)
-	root.set_meta("half_w", aabb.size.x * 0.5 * scale.x)
+	dress_car(root, (aabb.end.z + body.position.z) * scale.z, rear, aabb.size.x * 0.5 * scale.x,
+		(aabb.end.y + body.position.y) * scale.y, 0.55 * scale.x, oncoming)
+	return root
+
+
+# Paketteki araç (pack.gd): kendi dokuları, gece parlayan far ve stoplar.
+func make_pack_car(name: String, oncoming := false) -> Node3D:
+	var root := Node3D.new()
+	var model := Pack.build(name)
+	model.rotation.y = 0.0 if oncoming else PI
+	root.add_child(model)
+	var d := Pack.info(name)
+	dress_car(root, d.half_l, d.half_l, d.half_w, d.top, d.half_w * 0.62, oncoming)
+	return root
+
+
+# Trafik aracının ortak süsü: ölçüler, gölge, karşıdan gelende far hâlesi, yolda far/stop yansıması,
+# selektör için far ışığı. front: modelin burnu (+z'de, çevrilmeden önce), lx: farların yandan uzaklığı.
+func dress_car(root: Node3D, front: float, rear: float, half_w: float, top: float, lx: float, oncoming: bool) -> void:
+	root.set_meta("top", top)
+	root.set_meta("half_w", half_w)
 	root.set_meta("half_l", rear)
 	add_blob(root, rear)
 	# farlar her araçta yanar; bizim yöndekilerin ışığı önlerindeki yola düşer, arkamızdakiler selektör yapar
-	var nose := (aabb.end.z + body.position.z) * scale.z * (1.0 if oncoming else -1.0)
+	var nose := front * (1.0 if oncoming else -1.0)
 	var dir := 1.0 if oncoming else -1.0
 	for s in [-1.0, 1.0]:
 		if oncoming: # bizim yöndekilerin önü bize dönük değil, hâle yalnız karşıdan gelende
-			add_glow(root, Vector3(s * 0.55 * scale.x, 0.55, nose + 0.1), Color(1.0, 0.92, 0.75), 0.7, 1.0)
-			Build.streak(root, Vector3(s * 0.55 * scale.x, 0, nose), Color(1.0, 0.9, 0.7), 0.6, 10.0, 1.3)
+			add_glow(root, Vector3(s * lx, 0.55, nose + 0.1), Color(1.0, 0.92, 0.75), 0.7, 1.0)
+			Build.streak(root, Vector3(s * lx, 0, nose), Color(1.0, 0.9, 0.7), 0.6, 10.0, 1.3)
 		else:
-			Build.streak(root, Vector3(s * 0.55 * scale.x, 0, rear), Color(1.0, 0.08, 0.04), 0.5, 7.0, 1.5)
-	var beam := add_beam(root, nose, dir, 5.5 * scale.x, 24.0, Color(1.0, 0.92, 0.8), 0.3)
+			Build.streak(root, Vector3(s * lx, 0, rear), Color(1.0, 0.08, 0.04), 0.5, 7.0, 1.5)
+	var beam := add_beam(root, nose, dir, half_w * 4.4, 24.0, Color(1.0, 0.92, 0.8), 0.3)
 	beam.visible = oncoming # bizim yöndekinin ışığı önüne düşer, bize görünmez: yalnız selektörde açılır
 	root.set_meta("beam", beam)
-	return root
 
 
 # Far ışığının yola düşen kısmı (beam.gdshader). dir +1: +z'ye (bize doğru), -1: ileri.
@@ -2282,6 +2952,7 @@ func add_glow(root: Node3D, pos: Vector3, color: Color, size: float, facing := -
 		var m := StandardMaterial3D.new()
 		m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 		m.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+		m.disable_fog = true # toplamalı: sis rengi eklenip kare gibi görünmesin
 		m.cull_mode = BaseMaterial3D.CULL_BACK
 		m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 		m.albedo_texture = glow_tex
@@ -2311,6 +2982,47 @@ func set_beam(c: Node3D, v: float) -> void:
 func kenney_rear(model: Node3D) -> float:
 	var body: MeshInstance3D = model.find_children("body", "MeshInstance3D", true, false)[0]
 	return -(body.get_aabb().position.z + body.position.z) * model.scale.z
+
+
+# Jant: tekerlek meshleri (Kenney "wheel-*", R34 "RLW/FLW/FRW/RRW") seçilen jant modeliyle değişir, boyutuna
+# ölçeklenir; jant rengi ve kaplaması rim.gdshader'da. Yeni modelin jant yüzü +x'e bakar, sağdaki tekerlekte döner.
+const RIM_MODELS := ["", "wheel-racing", "wheel-dark", "wheel-default"]
+
+
+func apply_rims(model: Node3D, tex: Texture2D, rim: Array) -> void:
+	var m := ShaderMaterial.new()
+	m.shader = preload("res://rim.gdshader")
+	m.set_shader_parameter("albedo_tex", tex if rim[1] == 0 else preload("res://cars/kenney/Textures/colormap.png"))
+	m.set_shader_parameter("rim_col", rim[2])
+	m.set_shader_parameter("rim_fin", rim[3])
+	var mesh: Mesh = null
+	if rim[1] > 0:
+		var scn: Node = (load("res://cars/kenney/%s.glb" % RIM_MODELS[rim[1]]) as PackedScene).instantiate()
+		mesh = (scn.find_children("*", "MeshInstance3D", true, false)[0] as MeshInstance3D).mesh
+		scn.free()
+	for mi: MeshInstance3D in model.find_children("*", "MeshInstance3D", true, false):
+		if not (mi.name.to_lower().begins_with("wheel") or String(mi.get_parent().name) in ["RLW", "FLW", "FRW", "RRW"]):
+			continue
+		if mesh == null:
+			mi.material_override = m
+			continue
+		# tekerleğin dışa baktığı yan: modelin içindeki konumunun x işareti
+		var t: Transform3D = mi.transform
+		var n := mi.get_parent()
+		while n != model and n != null:
+			t = (n as Node3D).transform * t
+			n = n.get_parent()
+		var oa := mi.get_aabb()
+		var na := mesh.get_aabb()
+		var b := Basis.from_scale(oa.size / na.size)
+		if t.origin.x < 0.0:
+			b = Basis(Vector3.UP, PI) * b
+		var w := MeshInstance3D.new()
+		w.mesh = mesh
+		w.material_override = m
+		w.transform = mi.transform * Transform3D(b, oa.get_center() - b * na.get_center())
+		mi.get_parent().add_child(w)
+		mi.visible = false
 
 
 # Kaputun yüksekliği: aracın ön %27'lik kısmındaki en yüksek köşe. Kaput kamerası bunun üstüne konur;
@@ -2385,7 +3097,10 @@ func play(n: String, pitch := 1.0, db := 0.0) -> void:
 
 func update_audio(dt: float) -> void:
 	reverb.wet = tunnel_in * 0.35
-	rain_snd.volume_db = linear_to_db(maxf(rain_level * (1.0 - tunnel_in * 0.85), 0.001)) - 3.0
+	var hail := flake_level if flake_kind == "hail" else 0.0
+	var loud := maxf(maxf(rain_level, hail * 0.9), maxf(dust_level, wind_level) * 0.7)
+	rain_snd.volume_db = linear_to_db(maxf(loud * (1.0 - tunnel_in * 0.85), 0.001)) - 3.0
+	rain_snd.pitch_scale = 1.0 + hail * 0.5 - maxf(dust_level, wind_level * (1.0 - rain_level)) * 0.45 # dolu tıkırtılı, rüzgâr uğultulu
 	var target := -60.0 if state == "over" else (-16.0 if state == "menu" else -8.0)
 	engine_snd.volume_db = move_toward(engine_snd.volume_db, target, dt * (40.0 if state == "over" else 20.0))
 	# devir ve vitese göre perde: vites atınca devir düşer, ses de düşer
@@ -2401,7 +3116,17 @@ func update_audio(dt: float) -> void:
 
 func build_world() -> void:
 	env = Environment.new()
-	env.background_mode = Environment.BG_COLOR
+	# gökyüzü shader'ı; ışık haritası küçük ve tek seferde güncellenir: parça parça (incremental) güncellenince
+	# küp yüzleri farklı bulut kaymasıyla çiziliyor, gökte düz kenarlı dikişler kalıyordu
+	sky_mat = ShaderMaterial.new()
+	sky_mat.shader = preload("res://sky.gdshader")
+	var sky_res := Sky.new()
+	sky_res.sky_material = sky_mat
+	sky_res.radiance_size = Sky.RADIANCE_SIZE_32
+	sky_res.process_mode = Sky.PROCESS_MODE_AUTOMATIC
+	env.sky = sky_res
+	env.background_mode = Environment.BG_SKY
+	env.fog_sky_affect = 0.35 # yıldızlar sisin ardında kaybolmasın
 	env.background_color = NIGHT_SKY
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	env.ambient_light_color = Color(0.12, 0.16, 0.28)
@@ -2441,10 +3166,12 @@ func build_world() -> void:
 	road_mat.shader = preload("res://road.gdshader")
 	var rm := PlaneMesh.new()
 	rm.size = Vector2(16, 20)
+	rm.subdivide_depth = 8 # virajda yumuşak bükülsün
 	road_side_mat = ShaderMaterial.new()
 	road_side_mat.shader = preload("res://road_side.gdshader")
 	var sm := PlaneMesh.new()
 	sm.size = Vector2(3.6, 20)
+	sm.subdivide_depth = 8
 	for i in 21:
 		var road := MeshInstance3D.new()
 		road.mesh = rm
@@ -2488,6 +3215,56 @@ func update_reflection() -> void:
 	# aynalanmış taban sol elli olur; y eksenini çevirip sağ elli yap (görüntü baş aşağı, shader düzeltir)
 	refl_cam.global_transform = Transform3D(Basis(m.call(t.basis.x), -m.call(t.basis.y), m.call(t.basis.z)), m.call(t.origin))
 	refl_cam.fov = cam.fov
+
+
+# Garaj odası: beton zemin, duvarlar, tavan lambaları, raf ve lastikler. Kapalı oda dışarıyı gizler;
+# araba yolda durur, oda onun etrafında açılır.
+func build_garage_room() -> void:
+	garage_room = Node3D.new()
+	garage_room.visible = false
+	var floor_mat := Build.mat(Color(0.16, 0.17, 0.19), 0.35, 0.1)
+	var wall := Build.mat(Color(0.2, 0.21, 0.23), 0.85)
+	var shutter := Build.mat(Color(0.32, 0.34, 0.37), 0.5, 0.6)
+	var lamp := Build.mat(Color(1.0, 0.97, 0.9), 0.5, 0.0, 5.0)
+	var yellow := Build.mat(Color(1.0, 0.75, 0.1), 0.6, 0.0, 0.3)
+	Build.box(garage_room, Vector3(12, 0.1, 16), Vector3(0, 0.02, 0), floor_mat) # üstü 7 cm: yoldaki stop yansıması görünmesin
+	Build.box(garage_room, Vector3(12, 0.2, 16), Vector3(0, 5.1, 0), wall)
+	Build.box(garage_room, Vector3(12, 5.2, 0.3), Vector3(0, 2.5, -8), wall)
+	Build.box(garage_room, Vector3(12, 5.2, 0.3), Vector3(0, 2.5, 8), shutter) # kepenk
+	for sx in [-1.0, 1.0]:
+		Build.box(garage_room, Vector3(0.3, 5.2, 16), Vector3(sx * 6, 2.5, 0), wall)
+		Build.box(garage_room, Vector3(0.08, 0.01, 6.0), Vector3(sx * 1.6, 0.03, 0), yellow) # park çizgisi
+	for i in 6: # kepenk çizgileri
+		Build.box(garage_room, Vector3(11.6, 0.06, 0.05), Vector3(0, 0.6 + i * 0.75, 7.83), Build.mat(Color(0.2, 0.21, 0.23), 0.5))
+	for z in [-4.0, 0.0, 4.0]:
+		Build.box(garage_room, Vector3(3.0, 0.05, 0.5), Vector3(0, 4.97, z), lamp)
+	for z in [-3.0, 3.0]:
+		var l := OmniLight3D.new()
+		l.light_energy = 2.2
+		l.omni_range = 12.0
+		l.position = Vector3(0, 4.2, z)
+		garage_room.add_child(l)
+	Build.box(garage_room, Vector3(1.3, 1.0, 0.55), Vector3(4.9, 0.5, -7.2), Build.mat(Color(0.75, 0.08, 0.06), 0.4, 0.3)) # takım dolabı
+	Build.box(garage_room, Vector3(0.5, 2.6, 3.0), Vector3(-5.5, 1.3, -4.5), Build.mat(Color(0.12, 0.13, 0.15), 0.7, 0.4)) # raf
+	var tire := CylinderMesh.new()
+	tire.top_radius = 0.36
+	tire.bottom_radius = 0.36
+	tire.height = 0.26
+	for i in 4: # üst üste lastikler
+		var t := MeshInstance3D.new()
+		t.mesh = tire
+		t.material_override = Build.mat(Color(0.04, 0.04, 0.045), 0.9)
+		t.position = Vector3(-4.8, 0.14 + i * 0.27, 5.6)
+		garage_room.add_child(t)
+	var sign := Label3D.new()
+	sign.text = "FOREVER SPEED GARAGE"
+	sign.font_size = 96
+	sign.pixel_size = 0.01
+	sign.outline_size = 0
+	sign.modulate = Color(1.0, 0.3, 0.8)
+	sign.position = Vector3(0, 3.7, -7.8)
+	garage_room.add_child(sign)
+	add_child(garage_room)
 
 
 func build_rain() -> void:

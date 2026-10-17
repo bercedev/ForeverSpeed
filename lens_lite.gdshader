@@ -47,7 +47,9 @@ void fragment() {
 	// uniform'a bağlı dallar bütün ekranda aynı yöne gider: kapalı efekt hiç hesaplanmaz
 	if (wet > 0.01) {
 		vec3 a = drops(vec2(uv.x * aspect, uv.y), 12.0, TIME);
-		a.z *= wet;
+		// yolun göründüğü orta-alt bölgede damla az: cam ıslak kalsın ama yol okunsun
+		float keep = mix(0.25, 1.0, smoothstep(0.15, 0.45, length((uv - vec2(0.5, 0.6)) * vec2(1.6, 1.0))));
+		a.z *= wet * keep;
 		rim = a.z * smoothstep(0.55, 1.0, length(a.xy));
 		light += vec3(a.z * smoothstep(0.45, 0.0, length(a.xy + 0.4)) * 0.18);
 	}

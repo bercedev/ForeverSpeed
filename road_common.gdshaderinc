@@ -9,9 +9,13 @@
 uniform float offset = 0.0;
 uniform float rain_amt = 1.0; // yağış şiddeti: birikintilerde damla halkaları
 uniform vec2 widen = vec2(-1e6, -1e6); // 3. şerit bölgesinin başı ve sonu (sahne z'si, baş > son)
+uniform float widen_side = 1.0; // +1 sağda (bizim yön), -1 solda (karşı yön)
+uniform float curve = 0.0; // viraj: sahne z'sinde x kayması = curve * z * z (main.gd ile aynı)
+uniform float oneway = 0.0; // 1: dört şerit de aynı yöne, ortada çift sarı yerine kesikli beyaz
 uniform vec4 works = vec4(0.0, 0.0, -1e6, -1e6); // yol çalışması toprağı: x0, x1, yakın z, uzak z
 uniform sampler2D refl_tex : hint_default_black, filter_linear; // yüksek grafikte düzlem yansıması
 uniform float refl_amt = 0.0;
+uniform float snow = 0.0; // kar örtüsü: şerit aralarında ve kenarda kalın, tekerlek izlerinde çamur
 global uniform float wetness; // hava durumu: 1 sırılsıklam, 0 kuru
 global uniform float night;
 
@@ -53,18 +57,19 @@ void road_surface(vec2 p, vec2 suv, float time, out vec3 albedo, out float rough
 	vec2 q = vec2(p.x, p.y - offset);
 	float x = q.x;
 	float wf = wide_f(p.y);
-	float edge = x > 0.0 ? 7.0 + 3.5 * wf : 7.0; // 3. şerit açılınca sağ kenar dışarı kayar
+	float edge = x * widen_side > 0.0 ? 7.0 + 3.5 * wf : 7.0; // 3. şerit açılınca o yanın kenarı dışarı kayar
 
 	float dz = fract(q.y / 9.0);
 	float dash = smoothstep(0.0, 0.02, dz) * (1.0 - smoothstep(0.4, 0.42, dz));
 	// 4 şerit: ortada çift sarı (karşı yön ayrımı), her yönde şerit arası kesikli beyaz, kenarlarda düz beyaz.
-	// 3. şerit bölgesinde sağdaki eski kenar çizgisi kesikliye döner, yeni kenar çizgisi dışta.
-	float right_old = line(x, 7.0, 0.16) * (wf > 0.001 ? dash : 1.0);
-	float white = max((line(x, -3.5, 0.14) + line(x, 3.5, 0.14)) * dash, max(line(x, -7.0, 0.16), right_old));
+	// 3. şerit bölgesinde o yandaki eski kenar çizgisi kesikliye döner, yeni kenar çizgisi dışta.
+	float old_edge = line(x, 7.0 * widen_side, 0.16) * (wf > 0.001 ? dash : 1.0);
+	float white = max((line(x, -3.5, 0.14) + line(x, 3.5, 0.14)) * dash, max(line(x, -7.0 * widen_side, 0.16), old_edge));
 	if (wf > 0.001) {
-		white = max(white, line(x, edge, 0.16));
+		white = max(white, line(x, edge * widen_side, 0.16));
 	}
-	float yellow = max(line(x, -0.15, 0.12), line(x, 0.15, 0.12));
+	float yellow = max(line(x, -0.15, 0.12), line(x, 0.15, 0.12)) * (1.0 - oneway);
+	white = max(white, line(x, 0.0, 0.14) * dash * oneway);
 
 	// yol çalışması: kapalı şeritte asfalt sökülmüş, toprak ve iş makinesi izleri
 	float dirt = smoothstep(works.x, works.x + 0.2, x) * (1.0 - smoothstep(works.y - 0.2, works.y, x))
@@ -74,7 +79,7 @@ void road_surface(vec2 p, vec2 suv, float time, out vec3 albedo, out float rough
 	// su birikintisi: keskin kenarlı ayrı göller; tekerlek izlerinde (şerit ortası ±0,85 m) ve yol kenarında daha sık
 	float rut = 0.5 + 0.5 * cos((x - 0.9) * 6.2832 / 1.75);
 	float pn = noise(q, 9.0) * 0.6 + noise(q + vec2(31.7, 0.0), 2.5) * 0.4 + rut * 0.08 + smoothstep(5.5, 7.0, abs(x)) * 0.1;
-	float puddle = smoothstep(0.66, 0.70, pn) * smoothstep(0.3, 0.7, wetness);
+	float puddle = smoothstep(0.69, 0.73, pn) * smoothstep(0.3, 0.7, wetness); // seyrek: yolu kaplamasın
 	float grain = hash(vec2(floor(x * 30.0), mod(floor(q.y * 30.0), 27000.0)));
 
 	vec3 asphalt = vec3(0.035, 0.037, 0.042) * (0.8 + 0.4 * grain);
@@ -86,6 +91,12 @@ void road_surface(vec2 p, vec2 suv, float time, out vec3 albedo, out float rough
 	vec3 col = mix(asphalt, vec3(0.8), white * 0.85 * mix(1.0, 0.5, puddle));
 	col = mix(col, vec3(0.85, 0.6, 0.1), yellow * mix(1.0, 0.6, puddle));
 	float r = mix(mix(mix(0.75, 0.35, wetness), 0.12, damp), 0.5, max(white, yellow));
+	if (snow > 0.01) {
+		float sn = snow * clamp(0.3 + (1.0 - rut) * 0.45 + smoothstep(5.0, 7.0, abs(x)) * 0.5 + (noise(q, 1.5) - 0.5) * 0.6, 0.0, 1.0);
+		col = mix(col, vec3(0.72, 0.75, 0.8), sn);
+		r = mix(r, 0.8, sn);
+		puddle *= 1.0 - sn;
+	}
 	if (dirt > 0.001) {
 		float n = noise(q, 0.6) * 0.6 + noise(q, 2.5) * 0.4;
 		vec3 soil = mix(vec3(0.07, 0.05, 0.035), vec3(0.15, 0.11, 0.07), n) * mix(1.0, 0.6, wetness);
@@ -110,8 +121,8 @@ void road_surface(vec2 p, vec2 suv, float time, out vec3 albedo, out float rough
 	}
 
 	albedo = col;
-	rough = mix(r, mix(0.08, 0.02, night), puddle);
-	spec = mix(0.6, mix(0.5, 0.85, night), puddle); // gündüz gökyüzünü bembeyaz yansıtmasın
+	rough = mix(r, mix(0.22, 0.02, night), puddle);
+	spec = mix(0.6, mix(0.35, 0.85, night), puddle); // gündüz gökyüzünü bembeyaz yansıtmasın
 	nmap = vec3(ripple * 0.5 + 0.5, 1.0);
 	// gökyüzünün sahte yansıması: birikinti gece hafif lacivert, gündüz gri-mavi parlar
 	emis = vec3(0.9, 0.6, 0.1) * yellow * 0.08 + vec3(white * 0.03)
@@ -119,6 +130,6 @@ void road_surface(vec2 p, vec2 suv, float time, out vec3 albedo, out float rough
 	// yüksek grafik: yansıma kamerasının görüntüsü birikintide net, ıslak asfaltta soluk
 	if (refl_amt > 0.0) {
 		vec3 rc = texture(refl_tex, vec2(suv.x, 1.0 - suv.y) + ripple * 0.03).rgb;
-		emis += min(rc, vec3(1.5)) * refl_amt * (puddle * 0.7 + wetness * 0.035 * (1.0 - dirt));
+		emis += min(rc, vec3(1.5)) * refl_amt * (puddle * mix(0.12, 0.7, night) + wetness * 0.035 * night * (1.0 - dirt)); // gündüz parlak gök beyaz leke yapmasın
 	}
 }
