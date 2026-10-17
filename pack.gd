@@ -12,7 +12,7 @@ extends RefCounted
 const PATH := "res://cars/pack/car_pack.glb"
 # Tek araçlık modeller (cars/<ad>/<ad>.glb, CC BY; bkz. CREDITS.md). Blender'da hazırlandı: metre, üçgen sayısı
 # mobile göre azaltılmış, tekerlekler "wheel0..3", boyanan gövde "car_Body_*", lambalar "car_Optics_*".
-const SINGLES := ["e30", "doblo", "phoenix", "m4", "cop", "civic", "challenger", "gtr", "m5", "sf90"]
+const SINGLES := ["e30", "doblo", "phoenix", "m4", "cop", "civic", "challenger", "gtr", "m5", "sf90", "maybach"]
 const SCALE := 1.0 # sahne kökü milimetreyi zaten 0.000889 ile çarpıyor: gerçek boyun yaklaşık %89u
 # ön ucu dosyada -y'de olanlar (çeviri sonrası 180° döndürülür)
 const FLIP := ["minivan", "offroad", "coupe", "e30", "civic"]

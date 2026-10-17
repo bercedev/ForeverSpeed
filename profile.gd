@@ -20,6 +20,7 @@ const CARS := [
 	{"id": "p:suv", "name": "BIG SUV", "price": 5100, "top": 8.0, "accel": 0.95},
 	{"id": "p:phoenix", "name": "PHOENIX 455", "price": 5700, "top": 16.0, "accel": 1.1},
 	{"id": "p:challenger", "name": "CHALLENGER SRT", "price": 7500, "top": 22.0, "accel": 1.2},
+	{"id": "p:maybach", "name": "MAYBACH", "price": 8800, "top": 26.0, "accel": 1.12},
 	{"id": "p:sport", "name": "SPORT X", "price": 9500, "top": 28.0, "accel": 1.25},
 	{"id": "p:m4", "name": "M4 CSL", "price": 10800, "top": 30.0, "accel": 1.3},
 	{"id": "p:gtr", "name": "GT-R", "price": 11500, "top": 32.0, "accel": 1.35},

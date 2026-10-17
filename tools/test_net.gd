@@ -1,10 +1,10 @@
-# Online bağlantı denemesi: iki Net aynı süreçte kodlarını birbirine verir, bağlanır, init ile araçlarını
-# öğrenir, yarışı başlatıp durum gönderir; yanlış anahtarlı ve hileli paketler reddedilir. STUN için internet
-# ister. godot-mono --headless --path . --script tools/test_net.gd
+# Online bağlantı denemesi: A, B'nin 8 haneli kodunu girer ve aynı Wi-Fi gibi doğrudan (127.0.0.1) bağlanır, init ile
+# araçlarını öğrenir, yarışı başlatıp durum gönderir; yanlış anahtarlı ve hileli paketler reddedilir. İnternet ve
+# aktarma sunucusu gerekmez (sunucu yolu: tools/test_relay.gd). godot-mono --headless --path . --script tools/test_net.gd
 extends SceneTree
 
 var a: Node
-var c: Node # ulaşılamayan koda bağlanmaya çalışan: 10 sn sonra vazgeçmeli
+var c: Node # sunucusu olmadan koda bağlanmaya çalışan: 12 sn sonra vazgeçip nedenini söylemeli
 var b: Node
 var t := 0.0
 var step := 0
@@ -29,14 +29,12 @@ func _initialize() -> void:
 	b.countdown.connect(func(_s): counts += 1)
 	b.remote_pause.connect(func(on): pauses.append(on))
 	b.hit.connect(func(k): hits.append(k))
-	a.open()
-	b.open()
 	c = net.new()
 	root.add_child(c)
-	c.open()
-	# belgelere ayrılmış, yanıtsız adres; NAT'ı zor (7. alan "h"): yakın portlara da denenir
-	c.set_peer(Marshalls.utf8_to_base64("FS1|203.0.113.1:40000|||9|abcdef12|h"))
-	assert(c.peer_hard and c._spray == ["203.0.113.1", 40000], "zor NAT okunmadı")
+	for n in [a, b, c]:
+		n.relay_host = "" # bu denemede sunucu yok
+		n.open()
+	assert(c.set_peer("1234 5678"), "boşluklu kod reddedildi")
 
 
 # Eşleşmeden sonra paketler oturum anahtarıyla gider.
@@ -61,14 +59,15 @@ func _process(dt: float) -> bool:
 	t += dt
 	wait -= dt
 	if step == 0 and a.code != "" and b.code != "":
-		print("KOD A ", Marshalls.base64_to_utf8(a.code), "  ", a.status)
-		assert(Marshalls.base64_to_utf8(a.code).split("|").size() == 7, "kodda NAT türü yok")
-		assert(a.set_peer(Marshalls.utf8_to_base64("FS1|1.2.3.4:5|||6|0123abcd")), "eski 6 alanlı kod reddedildi")
-		assert(Marshalls.base64_to_utf8(a.code).split("|")[1] != "", "STUN dış adresi yok (DNS kuyruğu)")
+		print("KOD A ", a.code, "  ", a.status)
+		assert(a.code.length() == 8 and a.code.is_valid_int() and a.token == a.code, "kod 8 rakam değil")
 		assert(not a.set_peer(a.code), "kendi kodu kabul edildi")
-		assert(not a.set_peer("bozuk kod"), "bozuk kod kabul edildi")
-		# A, B'nin paylaştığı mesajın tamamını yapıştırır
-		assert(a.set_peer("Forever Speed online yarış kodum:\n" + b.code) and b.set_peer(a.code), "kod çözülemedi")
+		assert(not a.set_peer("bozuk kod 12"), "bozuk kod kabul edildi")
+		# A, B'nin paylaştığı mesajın tamamını yapıştırır; B kodu vermiş, bekler. Aynı Wi-Fi gibi doğrudan.
+		assert(a.set_peer("Forever Speed online yarış kodum: %s %s" % [b.code.left(4), b.code.right(4)]), "kod çözülemedi")
+		assert(a.peer_token == b.code and a.entered and not b.entered, "kod girilmedi")
+		a.targets = [["127.0.0.1", b.port]]
+		a._relay_on = false
 		step = 1
 	elif step == 1 and a.paired and b.paired:
 		print("EŞLEŞTİ %.2f sn  %s:%d  A'nın rakibi %s, B'nin rakibi %s" % [t, a.peer_ip, a.peer_port, a.remote.car, b.remote.car])
@@ -140,9 +139,8 @@ func _process(dt: float) -> bool:
 	elif step == 10 and a.paired and b.paired:
 		print("YENİDEN EŞLEŞTİ %.2f sn" % t)
 		step = 11
-	elif step == 11 and c.targets.is_empty():
-		assert(c.status.begins_with("BAĞLANAMADI") and t >= 10.0 and c._spray.is_empty(), "zaman aşımı: %s" % c.status)
-		assert(c.status.contains("ARKADAŞININ AĞI") or c.hard, "zor NAT mesajı: %s" % c.status)
+	elif step == 11 and not c._relay_on and c.status.begins_with("BAĞLANAMADI"):
+		assert(t >= 11.0 and c.status.contains("SUNUCU"), "zaman aşımı: %s" % c.status)
 		print("ZAMAN AŞIMI %.1f sn: %s" % [t, c.status])
 		print("TEST OK")
 		quit(0)

@@ -1,0 +1,22 @@
+# Aktarma sunucusu: UDP 47812. Kurulu olduğu yer: kurucucan sunucusu, /opt/forever-speed-relay.
+# Sunucuda dışarıdan container'a gelen trafiği kesen bir kural (DOCKER-USER) varsa bu port için istisna gerekir.
+services:
+  relay:
+    build:
+      context: .
+      dockerfile: relay.Dockerfile
+    image: forever-speed-relay:local
+    container_name: forever-speed-relay
+    restart: unless-stopped
+    ports:
+      - "47812:47812/udp"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 128m
+    pids_limit: 32
+    labels:
+      com.centurylinklabs.watchtower.enable: "false" # yerel imaj: watchtower çekmeye çalışmasın
+    logging:
+      driver: json-file
+      options: {max-size: "1m", max-file: "2"}

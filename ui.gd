@@ -55,6 +55,7 @@ var online_box: Control # online yarış paneli (net.gd)
 var on_status: Label
 var on_code: Label
 var on_copy: Button
+var on_entry: LineEdit # arkadaşın kodu: 8 rakam yazılınca bağlanır
 var on_start: Button
 var on_mode: Button # lobi: mod (4 km yarış / 2 dk puan) ve bot; ikinizde ortak
 var on_bot: Button
@@ -233,7 +234,7 @@ func build_play() -> void:
 
 
 func redraw_if(c: CanvasItem, key) -> void:
-	if c.get_meta("draw_key", null) != key:
+	if not c.has_meta("draw_key") or c.get_meta("draw_key") != key: # get_meta(k, null) eksikse hata yazıyor
 		c.set_meta("draw_key", key)
 		c.queue_redraw()
 
@@ -430,6 +431,8 @@ func draw_nitro() -> void:
 		col = col.lightened(0.3 + 0.3 * sin(main.alive * 8.0))
 	nitro_bar.draw_rect(Rect2(0, 0, w, h), Color(0, 0, 0, 0.45))
 	nitro_bar.draw_rect(Rect2(0, 0, w * f, h), col)
+	if active and main.nitro > 0.0: # yanarken biriken sonraki nitro: altta ince şerit
+		nitro_bar.draw_rect(Rect2(0, h * 0.62, w * main.nitro, h * 0.38), Color(0.6, 0.9, 1.0, 0.9))
 	nitro_bar.draw_rect(Rect2(0, 0, w, h), Color(1, 1, 1, 0.6), false, 2.0)
 	nitro_bar.draw_line(Vector2(w * 0.1, 0), Vector2(w * 0.1, h), Color(1, 1, 1, 0.7), 2.0) # kullanılabilir eşiği
 	var text := "NİTRO!" if active else ("NİTRO HAZIR · ÇİFT DOKUN" if is_ready else "NİTRO")
@@ -656,20 +659,39 @@ func build_online() -> void:
 	label(online_box, 34, 200, "ONLİNE YARIŞ").add_theme_font_override("font", title_font)
 	on_status = label(online_box, 22, 270)
 	label(online_box, 20, 380, "SENİN KODUN").add_theme_color_override("font_color", Color(1, 1, 1, 0.6))
-	on_code = label(online_box, 16, 415)
+	on_code = label(online_box, 64, 410)
 	on_code.add_theme_color_override("font_color", Color(0.6, 0.85, 1.0))
-	for l in [on_status, on_code]:
-		l.autowrap_mode = TextServer.AUTOWRAP_ARBITRARY
-		l.offset_left = 50.0
-		l.offset_right = -50.0
-	on_copy = button(online_box, "KOPYALA", -115, 540, 210, 80, copy_code, false, 24)
-	button(online_box, "PAYLAŞ", 115, 540, 210, 80, share_code, false, 24)
-	button(online_box, "ARKADAŞIMIN KODUNU YAPIŞTIR", 0, 640, 440, 80, paste_code, false, 20)
+	on_code.add_theme_font_override("font", title_font)
+	on_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	on_status.offset_left = 50.0
+	on_status.offset_right = -50.0
+	on_copy = button(online_box, "KOPYALA", -115, 515, 210, 70, copy_code, false, 24)
+	button(online_box, "PAYLAŞ", 115, 515, 210, 70, share_code, false, 24)
+	label(online_box, 20, 600, "YA DA ARKADAŞININ KODUNU GİR").add_theme_color_override("font_color", Color(1, 1, 1, 0.6))
+	on_entry = LineEdit.new()
+	on_entry.placeholder_text = "0000 0000"
+	on_entry.max_length = 9
+	on_entry.alignment = HORIZONTAL_ALIGNMENT_CENTER
+	on_entry.virtual_keyboard_type = LineEdit.KEYBOARD_TYPE_NUMBER
+	on_entry.add_theme_font_size_override("font_size", 40)
+	on_entry.anchor_left = 0.5
+	on_entry.anchor_right = 0.5
+	on_entry.offset_left = -220.0
+	on_entry.offset_right = 60.0
+	on_entry.offset_top = 640.0
+	on_entry.offset_bottom = 715.0
+	on_entry.text_changed.connect(func(t: String):
+		var digits := "".join(Array(t.split("")).filter(func(ch): return ch.is_valid_int()))
+		if digits.length() == 8:
+			on_entry.release_focus()
+			Net.set_peer(digits))
+	online_box.add_child(on_entry)
+	button(online_box, "YAPIŞTIR", 145, 640, 150, 75, paste_code, false, 20)
 	on_start = primary(button(online_box, "YARIŞA HAZIRIM", 0, 760, 440, 100, func(): Net.set_want(not Net.want), false, 30))
 	on_mode = button(online_box, "", -115, 875, 210, 60, func(): Net.set_lobby("mode", "score" if Net.lobby.mode == "race" else "race"), false, 18)
 	on_bot = button(online_box, "", 115, 875, 210, 60, func(): Net.set_lobby("bot", not Net.lobby.bot), false, 18)
 	button(online_box, "KAPAT", 0, 950, 240, 60, close_online, false, 22)
-	var note := label(online_box, 16, 1022, "Kod IP adresini içerir: yalnız yarışacağın arkadaşınla paylaş.")
+	var note := label(online_box, 16, 1022, "Kodu yalnız yarışacağın arkadaşınla paylaş. Biriniz kodu verir, öbürü girer.")
 	note.add_theme_color_override("font_color", Color(1, 1, 1, 0.45))
 	for i in 2:
 		var b := primary(button(online_box, "", 0, 1058 + i * 84, 560, 76, connect_lan.bind(i), false, 21), Color(0.3, 0.85, 1.0))
@@ -703,7 +725,7 @@ func refresh_online() -> void:
 		elif Net.want and not Net.peer_want:
 			st += "\nARKADAŞININ ONAYI BEKLENİYOR"
 	on_status.text = st
-	on_code.text = Net.code if Net.code != "" else "…"
+	on_code.text = "%s %s" % [Net.code.left(4), Net.code.right(4)] if Net.code != "" else "…"
 	on_start.disabled = not Net.paired
 	on_start.modulate.a = 1.0 if Net.paired else 0.35
 	on_start.text = "BEKLENİYOR · İPTAL" if Net.want else "YARIŞA HAZIRIM"
@@ -725,13 +747,13 @@ func refresh_online() -> void:
 func connect_lan(i: int) -> void:
 	var lp: Array = Net.lan_peers.keys()
 	if i < lp.size():
-		Net.set_peer(lp[i])
+		Net.connect_lan(lp[i])
 
 
 func copy_code() -> void:
 	if Net.code == "":
 		return
-	DisplayServer.clipboard_set(Net.code)
+	DisplayServer.clipboard_set("%s %s" % [Net.code.left(4), Net.code.right(4)])
 	on_copy.text = "KOPYALANDI"
 	get_tree().create_timer(2.0).timeout.connect(func(): if is_instance_valid(on_copy): on_copy.text = "KOPYALA")
 
@@ -739,10 +761,13 @@ func copy_code() -> void:
 # WhatsApp'ta kişi seçme ekranı açılır, mesaj hazır gelir (WhatsApp yoksa tarayıcıda wa.me açılır).
 func share_code() -> void:
 	if Net.code != "":
-		OS.shell_open("https://wa.me/?text=" + ("Forever Speed online yarış kodum:\n" + Net.code).uri_encode())
+		OS.shell_open("https://wa.me/?text=" + ("Forever Speed online yarış kodum: %s %s" % [Net.code.left(4), Net.code.right(4)]).uri_encode())
 
 
 func paste_code() -> void:
+	var found := RegEx.create_from_string("(\\d{4})\\s*(\\d{4})").search(DisplayServer.clipboard_get())
+	if found:
+		on_entry.text = found.get_string(1) + " " + found.get_string(2)
 	Net.set_peer(DisplayServer.clipboard_get())
 
 

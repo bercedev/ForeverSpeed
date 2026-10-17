@@ -14,6 +14,8 @@ The third-party assets below keep their own licenses.
   siren.ogg "Sirens and Alarm Noise" by aquinn · engine.wav "racing car engine sound loops" by domasx2 ·
   crash.ogg "Crash Collision" by qubodup · whoosh.wav "Swishes Sound Pack" by artisticdude ·
   boost.ogg "Boost or Launch or Thruster Sound Effect" by EZduzziteh ·
+  pass.ogg "Race Care" by SoundReality (Pixabay, https://pixabay.com/sound-effects/city-race-care-151963/,
+  Pixabay Content License; trimmed) ·
   click.ogg, confirm.ogg "Interface Sounds" by Kenney (kenney.nl).
 - Music (CC0 1.0, OpenGameArt.org; re-encoded and loudness-normalized, `audio/music/`):
   "Midnight Drive" by congusbongus · "Space City" by MintoDog · "Synth Wave" by Pro Sensory ·
@@ -50,5 +52,8 @@ The third-party assets below keep their own licenses.
   vertex colours turned into materials, hidden interior removed, reduced from 389k to 47k triangles;
   "2020 Ferrari SF90 Stradale" by Nazh Design
   (https://sketchfab.com/3d-models/2020-ferrari-sf90-stradale-26f20b26a76341089ac81a7a61a94d1a), `cars/sf90/`,
-  vertex colours turned into materials, hidden interior removed, reduced from 235k to 48k triangles.
+  vertex colours turned into materials, hidden interior removed, reduced from 235k to 48k triangles;
+  "Mercedes-Benz Maybach 2022" by Mpgs.studio3DModels
+  (https://sketchfab.com/3d-models/mercedes-benz-maybach-2022-979f37a878f04b2a8d888b62ea6027e9), `cars/maybach/`,
+  helper boxes and hidden interior removed, glass made opaque, reduced from 2.4M to 96k triangles.
 - App icon (`icon.png`): generated for this project with OpenAI image generation via Codex CLI.

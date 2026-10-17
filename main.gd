@@ -231,6 +231,7 @@ var bot_stun := 0.0
 var bot_think := 0.0
 var bot_bump_t := 0.0
 var bot_hit_t := 0.0
+var bot_rel := 0.0 # bota göre ara (+ önde): yanımızdan geçişi yakalamak için
 var ft_wait := 0.0 # biz bitirdik: arkadaşın daha önce bitirmiş olma ihtimaline karşı süresini bu kadar bekleriz
 var rival_stun := 0.0 # vurulunca bu kadar sn hızlanamaz, yalpalar
 var benching := false
@@ -478,7 +479,7 @@ func _ready() -> void:
 				var ov := arg.substr(7).split(":")
 				ui.open_online()
 				if ov[0] == "lan":
-					Net.changed.connect(func(): if not Net.connected and Net.targets.is_empty() and not Net.lan_peers.is_empty(): Net.set_peer(Net.lan_peers.keys()[0]))
+					Net.changed.connect(func(): if not Net.connected and not Net.entered and not Net.lan_peers.is_empty(): Net.connect_lan(Net.lan_peers.keys()[0]))
 				else:
 					Net.set_peer(ov[0])
 				if ov.size() > 1 and ov[1] == "go":
@@ -1181,8 +1182,7 @@ func update_run(step: float, dt: float) -> void:
 			crash(null, "SÜRE BİTTİ")
 	update_chase(dt)
 	update_race(dt)
-	if nitro_t <= 0.0:
-		nitro = minf(nitro + dt * 0.015, 1.0)
+	nitro = minf(nitro + dt * 0.015, 1.0) # nitro yanarken de dolar (sonraki nitro birikir)
 	if nitro >= 0.5 and not Profile.nitro_tip and not tip_on and not online: # online: ağır çekim süre kaybettirir
 		open_tip()
 	if tip_on and Time.get_ticks_msec() / 1000.0 > tip_until:
@@ -1415,8 +1415,7 @@ func near_miss(c: Node3D) -> void:
 	var close := 1.0 + (NEAR_GAP - gap) / NEAR_GAP # 1 (sınırda) .. 2 (sürtünerek)
 	var bonus := int((40 + kmh / 10.0) * close) * combo * (2 if nitro_t > 0.0 else 1) * (2 if head_on else 1)
 	score += bonus
-	if nitro_t <= 0.0:
-		nitro = minf(nitro + (0.3 if head_on else 0.2), 1.0)
+	nitro = minf(nitro + (0.3 if head_on else 0.2), 1.0) # nitro yanarken de dolar
 	ui.near_popup(("KARŞIDAN +%d" if head_on else "YAKIN +%d") % bonus, Color(1.0, 0.6, 0.4) if head_on else Color(1, 1, 1))
 	buzz(25, 0.4)
 	play("whoosh", randf_range(0.9, 1.2))
@@ -3085,7 +3084,15 @@ func rival_pass() -> void:
 	var rel := rival.position.z - car.position.z # + arkada
 	if rival_rel < 0.0 and rel >= 0.0 and state == "play" and absf(rival.position.x - car.position.x) >= side_gap(rival):
 		near_miss(rival)
+	elif rival_rel > 0.0 and rel <= 0.0:
+		zoom_by(rival_kmh)
 	rival_rel = rel
+
+
+# Rakip ya da bot yanımızdan çok hızlı geçti (kazada hızımız sıfırlanınca da): geçiş sesi.
+func zoom_by(their_kmh: float) -> void:
+	if state == "play" and their_kmh - kmh > 50.0:
+		play("pass", randf_range(0.95, 1.05), -2.0)
 
 
 # Yarışanlar birbirinin içinden geçemez. Önümüzdekinin arkasına girersek hızımız onunkine iner, yolumuz onun
@@ -3209,6 +3216,10 @@ func update_bot(dt: float) -> void:
 	set_flames(bot, bot_nitro_t > 0.0 if bot_driver() else Net.remote.bn)
 	if race_blink <= 0.0:
 		solid(bot, bot_dist, bot_kmh)
+	var brel := bot_dist - distance # + bot önde
+	if bot_rel < 0.0 and brel >= 0.0:
+		zoom_by(bot_kmh)
+	bot_rel = brel
 	# bizim araçla çarpışma: kendi payımızı alırız, botun payı onu sürene
 	bot_bump_t -= dt
 	if bot_bump_t <= 0.0 and race_blink <= 0.0 and absf(bot.position.z - car.position.z) < len_gap(bot) \
@@ -4011,7 +4022,7 @@ func inside_view() -> bool:
 
 
 # İç kısmı hazırlamada silinen modeller (tools/prep_car.py "cull"): kokpitte çizilen pano kalır.
-const NO_INTERIOR := ["p:m5", "p:sf90"]
+const NO_INTERIOR := ["p:m5", "p:sf90", "p:maybach"]
 
 
 # Çift yüzlü malzemelerin içeriden bakış eşi: [mesh, yüzey (-1: material_override), asıl, yüz ayıklamalı].
@@ -4621,7 +4632,7 @@ func build_audio() -> void:
 	rain_stream.loop = true
 	rain_snd = add_player(rain_stream, -3.0, "Master")
 	rain_snd.play()
-	for n in ["thunder", "crash", "whoosh", "boost", "click", "confirm"]:
+	for n in ["thunder", "crash", "whoosh", "boost", "click", "confirm", "pass"]:
 		var p := add_player(load("res://audio/%s.%s" % [n, "wav" if n == "whoosh" else "ogg"]), 0.0, "Master")
 		p.max_polyphony = 3
 		sfx[n] = p

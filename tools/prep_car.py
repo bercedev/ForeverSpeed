@@ -51,6 +51,40 @@ for o in meshes():
 select(meshes())
 bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
 
+# opaque: bu malzemeler (regex) opak olur (saydam cam koyu cama döner: içi hazırlamada silinen araçta boş kabin görünmesin)
+if cfg.get("opaque"):
+    for mat in bpy.data.materials:
+        if re.search(cfg["opaque"], mat.name):
+            mat.blend_method = 'OPAQUE'
+            if mat.node_tree:
+                for n in mat.node_tree.nodes:
+                    if n.type == 'BSDF_PRINCIPLED':
+                        n.inputs["Alpha"].default_value = 1.0
+                        for l in list(n.inputs["Alpha"].links):
+                            mat.node_tree.links.remove(l)
+
+# drop: malzemesi bu regex'e uyan nesneler silinir (modelde unutulmuş yardımcı kutular vb.)
+if cfg.get("drop"):
+    for o in meshes():
+        if any(m and re.search(cfg["drop"], m.name) for m in o.data.materials):
+            bpy.data.objects.remove(o)
+
+# pre: çok ağır modelde (milyonlarca üçgen) her nesne önce bu oranla azaltılır; gizli yüzey ayıklaması (cull)
+# ve tekerlek ayırma milyonlarca yüzeyde dakikalarca sürüyordu. Asıl azaltma aşağıda bütçeyle.
+if cfg.get("pre"):
+    for o in meshes():
+        # pre_skip: bu malzemeler ön azaltmaya girmez (cam delinirse gizli yüzey hesabı içeriyi silemiyor)
+        if tris(o) < 2000 or (cfg.get("pre_skip") and any(m and re.search(cfg["pre_skip"], m.name) for m in o.data.materials)):
+            continue
+        select([o])
+        bpy.ops.object.mode_set(mode='EDIT')
+        bpy.ops.mesh.select_all(action='SELECT')
+        bpy.ops.mesh.remove_doubles(threshold=0.0005)
+        bpy.ops.object.mode_set(mode='OBJECT')
+        mod = o.modifiers.new("pre", 'DECIMATE')
+        mod.ratio = cfg["pre"]
+        bpy.ops.object.modifier_apply(modifier="pre")
+
 # vcolor: k — rengi köşe renginde (UV ve doku yok, tek malzeme) olan modeller: yüz renkleri k kümeye ayrılır
 # (alanla ağırlıklı k-ortalama), her küme düz renkli bir malzeme olur ("vc00" en geniş alan). Oyunun boya ve
 # far sistemi malzemeye bakar; köşe rengi silinir. Tablo, boya ve lambaların hangi küme olduğunu seçmek için.
@@ -122,19 +156,26 @@ if cfg.get("cull"):
         r = math.sqrt(1.0 - zz * zz)
         a = i * math.pi * (3.0 - math.sqrt(5.0))
         dirs.append(Vector((r * math.cos(a), r * math.sin(a), zz)))
+    # bütün parçalar tek ağaçta: bir parçanın yüzeyini başka parça (kaporta) da örtebilir
+    verts, polys = [], []
+    for o in meshes():
+        base = len(verts)
+        verts.extend(o.matrix_world @ v.co for v in o.data.vertices)
+        polys.extend([base + i for i in pl.vertices] for pl in o.data.polygons)
+    tree = BVHTree.FromPolygons(verts, polys)
     for o in meshes():
         bm = bmesh.new()
         bm.from_mesh(o.data)
-        tree = BVHTree.FromBMesh(bm)
         hidden = []
         for f in bm.faces:
-            c = f.calc_center_median()
+            c = o.matrix_world @ f.calc_center_median()
             if not any(tree.ray_cast(c + d * 0.003, d, 30.0)[0] is None for d in dirs):
                 hidden.append(f)
         bmesh.ops.delete(bm, geom=hidden, context='FACES')
         bm.to_mesh(o.data)
         bm.free()
-        print("GIZLI %s %d yüzey silindi" % (o.name, len(hidden)))
+        if hidden:
+            print("GIZLI %s %d yüzey silindi" % (o.name, len(hidden)))
 
 # recolor: {"malzeme regex": [r, g, b]} — dokusuz modellerde beyaz kalan koltuk, lastik vb.
 for pat, rgb in cfg.get("recolor", {}).items():
