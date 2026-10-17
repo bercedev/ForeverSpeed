@@ -12,20 +12,21 @@ const PATH := "user://save.cfg"
 # top: tavan hıza eklenen km/sa, accel: ivme çarpanı
 const CARS := [
 	{"id": "p:e30", "name": "E30 KLASİK", "price": 0, "top": -2.0, "accel": 0.8},
-	{"id": "p:doblo", "name": "DOBLO", "price": 1020, "top": -10.0, "accel": 0.72},
-	{"id": "p:compact", "name": "CITY HOPPER", "price": 1360, "top": -5.0, "accel": 0.8},
-	{"id": "r34", "name": "MIDNIGHT GT", "price": 3400, "top": 4.0, "accel": 0.9},
-	{"id": "p:coupe", "name": "COUPE GT", "price": 5100, "top": 12.0, "accel": 1.05},
-	{"id": "p:suv", "name": "BIG SUV", "price": 6800, "top": 8.0, "accel": 0.95},
-	{"id": "p:phoenix", "name": "PHOENIX 455", "price": 7650, "top": 16.0, "accel": 1.1},
-	{"id": "race", "name": "RACER", "price": 8500, "top": 18.0, "accel": 1.15},
-	{"id": "police", "name": "INTERCEPTOR", "price": 11050, "top": 24.0, "accel": 1.2},
-	{"id": "p:sport", "name": "SPORT X", "price": 12750, "top": 28.0, "accel": 1.25},
-	{"id": "p:m4", "name": "M4 CSL", "price": 14450, "top": 30.0, "accel": 1.3},
-	{"id": "race-future", "name": "FUTURE", "price": 15300, "top": 32.0, "accel": 1.3},
+	{"id": "p:doblo", "name": "DOBLO", "price": 750, "top": -10.0, "accel": 0.72},
+	{"id": "p:compact", "name": "CITY HOPPER", "price": 1000, "top": -5.0, "accel": 0.8},
+	{"id": "p:civic", "name": "CIVIC", "price": 1600, "top": 0.0, "accel": 0.85},
+	{"id": "r34", "name": "MIDNIGHT GT", "price": 2500, "top": 4.0, "accel": 0.9},
+	{"id": "p:coupe", "name": "COUPE GT", "price": 3800, "top": 12.0, "accel": 1.05},
+	{"id": "p:suv", "name": "BIG SUV", "price": 5100, "top": 8.0, "accel": 0.95},
+	{"id": "p:phoenix", "name": "PHOENIX 455", "price": 5700, "top": 16.0, "accel": 1.1},
+	{"id": "p:challenger", "name": "CHALLENGER SRT", "price": 7500, "top": 22.0, "accel": 1.2},
+	{"id": "p:sport", "name": "SPORT X", "price": 9500, "top": 28.0, "accel": 1.25},
+	{"id": "p:m4", "name": "M4 CSL", "price": 10800, "top": 30.0, "accel": 1.3},
+	{"id": "p:gtr", "name": "GT-R", "price": 11500, "top": 32.0, "accel": 1.35},
 ]
 # Listeden çıkan eski (Kenney) araçlar: sahibine fiyatı geri verilir.
-const RETIRED := {"taxi": 1200, "sedan-sports": 1500, "hatchback-sports": 2500, "suv-luxury": 3500}
+const RETIRED := {"taxi": 1200, "sedan-sports": 1500, "hatchback-sports": 2500, "suv-luxury": 3500,
+	"race": 8500, "police": 11050, "race-future": 15300}
 # Araç başına geliştirme: [ad, ilk seviye fiyatı]. Fiyat seviyeyle artar, en çok MAX_LEVEL.
 const UPGRADES := {
 	"speed": ["HIZ", 400],

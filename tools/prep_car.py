@@ -99,15 +99,19 @@ for o in meshes():
     if max(hi - lo) < 0.04:
         bpy.data.objects.remove(o)
 
+for o in meshes():
+    if o.name.startswith("wheel"):
+        o.name = "w_" + o.name # "wheelN" adları aşağıdaki tekerlek gruplarının
 z0 = min(bbox(o)[0].z for o in meshes())
-# tekerlek: yere değen, yüksekliği ve bir yatay boyu eşit (daire), öbür yatay boyu dar
+# tekerlek: yere değen, yüksekliği bir yatay boyuna yakın (daire), öbür yatay boyu dar. Direksiyonu kırık
+# modellenmiş ön tekerleğin kutusu iki yatay yönde de genişler, eşikler ona göre gevşek.
 wheels = []
 for o in meshes():
     lo, hi = bbox(o)
     d = hi - lo
     if not (0.25 < d.z < 0.95 and lo.z - z0 < 0.12):
         continue
-    if (abs(d.x - d.z) < d.z * 0.25 and d.y < 0.5) or (abs(d.y - d.z) < d.z * 0.25 and d.x < 0.5):
+    if d.z * 0.75 < max(d.x, d.y) < d.z * 1.35 and min(d.x, d.y) < d.z * 0.85:
         wheels.append(o)
 cs = [(bbox(o)[0] + bbox(o)[1]) * 0.5 for o in wheels]
 cx = sum(c.x for c in cs) / len(cs)
@@ -131,6 +135,24 @@ for k, objs in groups.items():
     select(objs)
     bpy.ops.object.join()
     bpy.context.view_layer.objects.active.name = "wheel%d" % k
+
+# direksiyonu kırık tekerlek düz konuma döner (oyunda kendi ekseninde dönüyor): dikey eksende, tekerleğin
+# yanal kalınlığını en aza indiren açı. Yan eksen, tekerlek merkezlerinin az yayıldığı yatay eksen.
+import numpy as np
+from mathutils import Matrix
+lat = 0 if max(c.y for c in cs) - min(c.y for c in cs) > max(c.x for c in cs) - min(c.x for c in cs) else 1
+for k in groups:
+    o = bpy.data.objects["wheel%d" % k]
+    v = np.empty(len(o.data.vertices) * 3)
+    o.data.vertices.foreach_get("co", v)
+    v = v.reshape(-1, 3)
+    c = (v.min(0) + v.max(0)) * 0.5
+    dx, dy = v[:, 0] - c[0], v[:, 1] - c[1]
+    def width(a):
+        return np.ptp(np.cos(a) * dx - np.sin(a) * dy if lat == 0 else np.sin(a) * dx + np.cos(a) * dy)
+    a = min(np.radians(np.arange(-40.0, 40.1, 0.25)), key=width)
+    print("DUZELT wheel%d %.2f derece" % (k, np.degrees(a)))
+    o.data.transform(Matrix.Translation(Vector(c)) @ Matrix.Rotation(a, 4, 'Z') @ Matrix.Translation(-Vector(c)))
 
 # gövde: malzemeye göre ayır ve topla
 rest = [o for o in meshes() if not o.name.startswith("wheel")]

@@ -50,6 +50,11 @@ var chase_s := -1.0 # polis kovalamacasında kalan sn
 var near_label: Label # yakın geçiş puanı: arabanın dibinde, küçük
 var near_tween: Tween
 var road_box: Control
+var online_box: Control # online yarış paneli (net.gd)
+var on_status: Label
+var on_code: Label
+var on_copy: Button
+var on_start: Button
 
 var g_coins: Label
 var g_name: Label
@@ -72,10 +77,15 @@ var timer_label: Label
 var flash_rect: ColorRect
 var cockpit: Control
 var pause_box: Control
+var pause_title: Label
+var count_label: Label # online: devam ve başlangıç geri sayımı
+var count_t := 0.0
+var counting := false
 var hud_missions: Label
 var race_label: Label
 var hb_btn: Button
 var rival_back: Label # rakip geride: altta ok ve mesafe
+var racers: Array[Label] = [] # online yarışta solda üstte katılımcılar: sen ve arkadaşın (ping'iyle)
 var np_label: Label # çalan parça
 var station_buttons: Array[Button] = []
 var cam_buttons: Array[Button] = []
@@ -95,11 +105,12 @@ func _ready() -> void:
 	build_settings()
 	build_pause()
 	build_road()
+	build_online()
 
 
 # Açık bir panel varken (garaj, ayarlar) dokunuş ve Enter oyunu başlatmaz.
 func panel_open() -> bool:
-	return garage_open or settings_open or road_box.visible
+	return garage_open or settings_open or road_box.visible or online_box.visible
 
 
 # --- Oyun içi ---
@@ -176,6 +187,16 @@ func build_play() -> void:
 	hud_missions.add_theme_constant_override("line_spacing", 2)
 	hud_missions.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	play_box.add_child(hud_missions)
+	for i in 2:
+		var r := Label.new()
+		r.offset_left = 12.0
+		r.offset_top = 78.0 + i * 24.0
+		r.add_theme_font_size_override("font_size", 17)
+		r.add_theme_constant_override("outline_size", 6)
+		r.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
+		r.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		play_box.add_child(r)
+		racers.append(r)
 	race_label = label(play_box, 22, 100)
 	race_label.anchor_left = 0.5
 	race_label.anchor_right = 0.5
@@ -228,6 +249,14 @@ func update_hud() -> void:
 	if Engine.get_process_frames() % 20 == 0: # görev metni sık değişmez
 		set_text(hud_missions, hud_missions_text())
 	race_label.visible = main.race_on
+	for r in racers:
+		r.visible = main.online and main.race_on
+	if racers[0].visible and (Engine.get_process_frames() % 15 == 0 or racers[0].text == ""):
+		var ms := int(Net.ping_ms)
+		set_text(racers[0], "● SEN · " + Profile.car_info(Profile.car).name)
+		set_text(racers[1], "● ARKADAŞIN · %s · %d ms" % [Profile.car_info(Net.remote.car).name, ms])
+		racers[0].add_theme_color_override("font_color", Color(0.45, 0.85, 1.0))
+		racers[1].add_theme_color_override("font_color", Color(0.4, 1.0, 0.5) if ms < 90 else (Color(1.0, 0.85, 0.3) if ms < 180 else Color(1.0, 0.4, 0.35)))
 	if hb_btn.get_meta("on", false) != main.handbrake:
 		hb_btn.set_meta("on", main.handbrake)
 		hb_btn.queue_redraw()
@@ -238,7 +267,7 @@ func update_hud() -> void:
 	if main.race_on:
 		set_text(race_label, main.race_text())
 		if rival_back.visible:
-			set_text(rival_back, "▼  RAKİP %d m GERİDE" % int(back))
+			set_text(rival_back, "▼  %s %d m GERİDE" % ["ARKADAŞIN" if main.online else "RAKİP", int(back)])
 	hint_label.modulate.a = clampf(6.0 - main.run_time, 0.0, 1.0)
 
 
@@ -403,6 +432,16 @@ func _process(dt: float) -> void:
 		g_ind.offset_right = g_ind.offset_left + 124.0
 	if pause_box.visible:
 		set_text(np_label, main.now_playing()) # parça bitip yenisi başlarsa güncel kalsın
+	if counting: # oyun dururken de akar (bu düğüm duraklatmada da çalışır)
+		count_t -= dt
+		set_text(count_label, str(ceili(count_t)) if count_t > 0.0 else "BAŞLA!")
+		if count_t <= 0.0 and main.paused:
+			main.set_pause(false, true)
+		if count_t <= -0.4: # "BAŞLA!" bir an görünür
+			stop_countdown()
+	if main.online and main.race_on and main.paused and (not Net.connected or Net.remote.quit):
+		stop_countdown()
+		main.set_pause(false, true) # yarış update_online'da biter
 
 
 func _notification(what: int) -> void:
@@ -421,6 +460,8 @@ func _unhandled_key_input(e: InputEvent) -> void:
 
 func close_panels() -> void:
 	road_box.visible = false
+	if online_box.visible:
+		close_online()
 	if garage_open:
 		close_garage()
 	if settings_open:
@@ -435,8 +476,12 @@ func build_pause() -> void:
 	dim.color = Color(0, 0, 0, 0.65)
 	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
 	pause_box.add_child(dim)
-	var t := label(pause_box, 56, 140, "DURAKLATILDI")
-	t.add_theme_font_override("font", title_font)
+	pause_title = label(pause_box, 56, 140, "DURAKLATILDI")
+	pause_title.add_theme_font_override("font", title_font)
+	count_label = label(play_box, 180, 460) # duraklatma panelinin altında kalmasın diye o kapanınca görünür
+	count_label.add_theme_font_override("font", title_font)
+	count_label.add_theme_constant_override("outline_size", 24)
+	count_label.visible = false
 	primary(button(pause_box, "DEVAM", 0, 250, 360, 84, func(): main.set_pause(false), false, 32))
 	button(pause_box, "YENİDEN BAŞLA", 0, 352, 300, 62, func(): main.restart(), false, 24)
 	button(pause_box, "MENÜ", 0, 430, 300, 62, func(): main.to_menu(), false, 24)
@@ -453,7 +498,31 @@ func build_pause() -> void:
 
 func show_pause(on: bool) -> void:
 	pause_box.visible = on
+	pause_title.text = "ARKADAŞIN OYUNU\nDURDURDU" if main.remote_paused else "DURAKLATILDI"
+	pause_title.add_theme_font_size_override("font_size", 40 if main.remote_paused else 56)
 	refresh_pause()
+
+
+func start_countdown(sec: float) -> void:
+	count_t = sec
+	counting = true
+	count_label.add_theme_font_size_override("font_size", 180)
+	pause_box.visible = false
+	count_label.visible = true
+
+
+# Arkadaşın sahnesi yüklenene kadar: sayı yok, bekleme yazısı.
+func wait_countdown() -> void:
+	counting = false
+	pause_box.visible = false
+	count_label.visible = true
+	set_text(count_label, "HAZIRLANIYOR…")
+	count_label.add_theme_font_size_override("font_size", 48)
+
+
+func stop_countdown() -> void:
+	counting = false
+	count_label.visible = false
 
 
 func refresh_pause() -> void:
@@ -522,6 +591,88 @@ func build_road() -> void:
 	primary(button(road_box, "ÇİFT YÖN\nkarşıdan trafik var", 0, 470, 440, 110, pick_road.bind("two"), false, 24))
 	button(road_box, "TEK YÖN\ndört şerit de ileri", 0, 600, 440, 110, pick_road.bind("one"), false, 26)
 	button(road_box, "GERİ", 0, 740, 240, 60, func(): road_box.visible = false, false, 22)
+
+
+# Online yarış: kodunu kopyalayıp arkadaşına gönderirsin, onunkini yapıştırırsın; bağlanınca biri başlatır.
+func build_online() -> void:
+	online_box = box()
+	var dim := ColorRect.new()
+	dim.color = Color(0, 0, 0, 0.9)
+	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	online_box.add_child(dim)
+	label(online_box, 34, 200, "ONLİNE YARIŞ").add_theme_font_override("font", title_font)
+	on_status = label(online_box, 22, 270)
+	label(online_box, 20, 380, "SENİN KODUN").add_theme_color_override("font_color", Color(1, 1, 1, 0.6))
+	on_code = label(online_box, 16, 415)
+	on_code.add_theme_color_override("font_color", Color(0.6, 0.85, 1.0))
+	for l in [on_status, on_code]:
+		l.autowrap_mode = TextServer.AUTOWRAP_ARBITRARY
+		l.offset_left = 50.0
+		l.offset_right = -50.0
+	on_copy = button(online_box, "KOPYALA", -115, 540, 210, 80, copy_code, false, 24)
+	button(online_box, "PAYLAŞ", 115, 540, 210, 80, share_code, false, 24)
+	button(online_box, "ARKADAŞIMIN KODUNU YAPIŞTIR", 0, 640, 440, 80, paste_code, false, 20)
+	on_start = primary(button(online_box, "YARIŞI BAŞLAT", 0, 760, 440, 100,
+		func(): Net.start(Profile.road, main.region_at(main.travel)), false, 30))
+	button(online_box, "KAPAT", 0, 900, 240, 60, close_online, false, 22)
+	var note := label(online_box, 16, 985, "Kod IP adresini içerir: yalnız yarışacağın arkadaşınla paylaş.")
+	note.add_theme_color_override("font_color", Color(1, 1, 1, 0.45))
+	Net.changed.connect(refresh_online)
+	Net.go.connect(on_go)
+
+
+func open_online() -> void:
+	online_box.visible = true
+	Net.car = Profile.car
+	Net.paint = Profile.paint
+	Net.rim = Profile.rim
+	if not Net.udp.is_bound():
+		Net.open()
+	refresh_online()
+
+
+func close_online() -> void:
+	online_box.visible = false
+	Net.close()
+
+
+func refresh_online() -> void:
+	var st := Net.status
+	if Net.paired:
+		st += "\nARKADAŞIN: %s · %d ms" % [Profile.car_info(Net.remote.car).name, int(Net.ping_ms)]
+	on_status.text = st
+	on_code.text = Net.code if Net.code != "" else "…"
+	on_start.disabled = not Net.paired
+	on_start.modulate.a = 1.0 if Net.paired else 0.35
+
+
+func copy_code() -> void:
+	if Net.code == "":
+		return
+	DisplayServer.clipboard_set(Net.code)
+	on_copy.text = "KOPYALANDI"
+	get_tree().create_timer(2.0).timeout.connect(func(): if is_instance_valid(on_copy): on_copy.text = "KOPYALA")
+
+
+# WhatsApp'ta kişi seçme ekranı açılır, mesaj hazır gelir (WhatsApp yoksa tarayıcıda wa.me açılır).
+func share_code() -> void:
+	if Net.code != "":
+		OS.shell_open("https://wa.me/?text=" + ("Forever Speed online yarış kodum:\n" + Net.code).uri_encode())
+
+
+func paste_code() -> void:
+	Net.set_peer(DisplayServer.clipboard_get())
+
+
+# İki tarafta da: arkadaşın ya da sen başlattın. Sahne her zaman yenilenir: iki cihaz aynı tohumla, aynı
+# başlangıçtan kurulur (main._ready).
+func on_go(road: String, _region: int) -> void:
+	Profile.mode = "race"
+	Profile.road = road
+	Profile.save()
+	Profile.autostart = true
+	get_tree().paused = false
+	get_tree().reload_current_scene()
 
 
 func ask_road() -> void:
@@ -695,7 +846,11 @@ func build_menu() -> void:
 	for i in Profile.MODES.size():
 		mode_buttons.append(button(menu_box, Profile.MODE_NAMES[i], -240.0 + i * 160.0, -525, 152, 58, pick_mode.bind(i), true, 16))
 	primary(button(menu_box, "GARAJ", 0, -430, 360, 84, open_garage, true, 30))
-	button(menu_box, "AYARLAR", 0, -325, 300, 62, open_settings, true, 24)
+	if OS.has_feature("web"): # tarayıcıda UDP yok
+		button(menu_box, "AYARLAR", 0, -325, 300, 62, open_settings, true, 24)
+	else:
+		button(menu_box, "AYARLAR", -160, -325, 300, 62, open_settings, true, 24)
+		button(menu_box, "ONLİNE YARIŞ", 160, -325, 300, 62, open_online, true, 24)
 	tap_label = label(menu_box, 34, -220, "DOKUN VE BAŞLA", true)
 	tap_label.add_theme_font_override("font", title_font)
 

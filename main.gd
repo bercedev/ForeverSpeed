@@ -198,6 +198,13 @@ var rival_bump_t := 0.0
 var rival_think := 0.0
 var race_blink := 0.0 # yarışta kaza: araç durur, bu süre boyunca yanıp söner ve çarpışmaz
 var finish: Node3D # yarışın bitiş kapısı
+var online := false # bu yarışın rakibi arkadaşın (Net); bağlantı kopsa da öyle kalır
+# online bitiş: kazanan, geri sayımın bitişinden ölçülen bitiş süresiyle seçilir (iki taraf aynı anda kalkar).
+# Mesafeyle seçilseydi, ikisi de rakibi gecikme kadar ileri tahmin ettiği için kıl payında ikisi de kazanırdı.
+var race_t := 0.0
+var my_ft := -1.0
+var rival_ft := -1.0
+var ft_wait := 0.0 # biz bitirdik: arkadaşın daha önce bitirmiş olma ihtimaline karşı süresini bu kadar bekleriz
 var rival_stun := 0.0 # vurulunca bu kadar sn hızlanamaz, yalpalar
 var benching := false
 var weather := "sağanak"
@@ -258,6 +265,7 @@ var track := 0
 var wipe := 1.0 # kokpitte silecek geçtikçe camdaki damlalar azalır
 var wipe_phase := 0.0
 var paused := false
+var remote_paused := false # online: duraklatan arkadaş
 const RESUME_SLOW := 1.2 # duraklatmadan dönünce ağır çekimin gerçek süresi (sn)
 var resume_t := 0.0
 var max_scale := 1.0 # grafik ayarının izin verdiği en yüksek 3B çözünürlük
@@ -295,6 +303,8 @@ var ui # ui.gd
 
 func _ready() -> void:
 	Engine.time_scale = 1.0 # öğretici ağır çekimdeyken sahne yenilenirse kalmasın
+	if Net.racing: # online: iki cihaz aynı tohumla kurulur (bölge, araç havuzu, olay zamanlayıcıları)
+		seed(hash([Net.race_id, "sahne"]))
 	region_offset = (randi() % 4) * Regions.LEN
 	for n in TRAFFIC_MODELS + TRUCK_MODELS + RIVAL_MODELS + ["police", "ambulance", "firetruck", "tractor-shovel"]:
 		models[n] = load("res://cars/kenney/%s.glb" % n)
@@ -336,9 +346,10 @@ func _ready() -> void:
 		props.append(p)
 	set_player_car(Profile.car, Profile.paint)
 	car.position.x = target_x
-	# her beş araçtan biri kamyon
-	for i in 28:
-		var oncoming := i >= 18
+	# her beş araçtan biri kamyon; online'da bizim yön daha kalabalık (trafik alanı sıklaşınca havuz tükenmesin)
+	var n_ours := 28 if Net.racing else 18
+	for i in n_ours + 10:
+		var oncoming := i >= n_ours
 		var c: Node3D
 		if i % 5 == 0:
 			c = make_kenney(TRUCK_MODELS.pick_random(), oncoming, TRUCK_SCALE)
@@ -347,6 +358,7 @@ func _ready() -> void:
 		else:
 			c = make_kenney(TRAFFIC_MODELS.pick_random(), oncoming)
 		c.visible = false
+		c.set_meta("pid", i) # online trafik alanı aynı modeli bu numarayla ister
 		add_child(c)
 		(pool_on if oncoming else pool).append(c)
 	pool.shuffle()
@@ -370,11 +382,17 @@ func _ready() -> void:
 	get_tree().quit_on_go_back = false # geri tuşu on_back'e gider, uygulamayı kapatmaz
 	ui = preload("res://ui.gd").new()
 	add_child(ui)
+	Net.remote_pause.connect(on_remote_pause)
+	Net.hit.connect(on_net_hit)
+	Net.ghost.connect(on_net_ghost)
+	Net.countdown.connect(ui.start_countdown)
 	if Profile.autostart:
 		Profile.autostart = false
 		start_run()
 	else:
 		ui.show_menu()
+		if Net.connected:
+			ui.open_online()
 	warm(true)
 	if OS.is_debug_build(): # test: godot -- weather=kar play
 		for arg in OS.get_cmdline_user_args():
@@ -407,6 +425,14 @@ func _ready() -> void:
 			elif arg == "incident":
 				incident_on = true
 				incident_at = travel + 19.0
+			elif arg == "online" and not Net.racing:
+				ui.open_online()
+			elif arg.begins_with("online=") and not Net.racing: # test: arkadaşın kodu; online=KOD:go bağlanınca yarışı kendisi başlatır
+				var ov := arg.substr(7).split(":")
+				ui.open_online()
+				Net.set_peer(ov[0])
+				if ov.size() > 1 and ov[1] == "go":
+					Net.changed.connect(func(): if Net.paired and not Net.racing and state == "menu": Net.start(Profile.road, region_at(travel)))
 			elif arg == "garage":
 				ui.open_garage()
 			elif arg.begins_with("curve="):
@@ -451,10 +477,15 @@ func _ready() -> void:
 		bench()
 
 
-# Test: bulunduğumuz yeri r bölgesine taşır, bütün çevre parçalarını yeniden kurar (yalnız debug).
+# Test: bulunduğumuz yeri r bölgesine taşır (yalnız debug).
 func dbg_region(r: int) -> void:
-	if not OS.is_debug_build():
-		return
+	if OS.is_debug_build():
+		move_region(r)
+
+
+# Bulunduğumuz yeri r bölgesinin başına (200 m içine) taşır, bütün çevre parçalarını yeniden kurar. Online
+# yarışta iki taraf aynı bölgede, aynı noktada başlar.
+func move_region(r: int) -> void:
 	region_offset = fposmod(r * Regions.LEN - travel + 200.0, 4.0 * Regions.LEN)
 	for p in props:
 		Regions.configure(p, region_at(travel - p.position.z), region_edge(travel - p.position.z))
@@ -640,6 +671,7 @@ func start_run() -> void:
 	region = region_at(travel)
 	run_time = 0.0
 	load_stats()
+	ev_seed("başlangıç")
 	if Profile.mode != "free":
 		next_works = travel + randf_range(1800.0, 2600.0) # ilk yol çalışması oyunun ~2. km'sinde
 	time_left = 30.0
@@ -653,6 +685,10 @@ func start_run() -> void:
 		start_race()
 	set_road("oneway", 1.0 if Profile.road == "one" else 0.0)
 	ui.show_play()
+	if online: # ikisi de durur; iki taraf da yüklenince 3 sn sayılır, aynı anda kalkar
+		set_pause(true, true)
+		ui.wait_countdown()
+		Net.mark_ready()
 
 
 # Seçili aracın temel değerleri ve garajdaki geliştirmeleri.
@@ -669,12 +705,17 @@ func load_stats() -> void:
 
 func restart() -> void:
 	get_tree().paused = false # duraklatma sahne yenilense de kalır
-	Profile.autostart = true
+	if online and race_on:
+		Net.send_quit()
+	Profile.autostart = not Net.connected # online: menüye, yeni yarışı iki taraftan biri başlatır
 	get_tree().reload_current_scene()
 
 
 func to_menu() -> void:
 	get_tree().paused = false
+	if online and race_on:
+		Net.send_quit()
+	Net.racing = false
 	get_tree().reload_current_scene()
 
 
@@ -682,6 +723,8 @@ func to_menu() -> void:
 func crash(c: Node3D, reason := "KAZA", crashed := true) -> void:
 	if state != "play":
 		return
+	if OS.is_debug_build():
+		print("[run] ", reason)
 	if race_on and crashed:
 		race_wreck(c)
 		return
@@ -810,6 +853,8 @@ func auto_tune() -> void:
 
 # Ekran kartı adından kaba sınıf: 2 yüksek, 1 orta, 0 düşük. Bilinmeyen telefon orta başlar, ölçüm düzeltir.
 func gpu_tier() -> int:
+	if OS.has_feature("web"): # tarayıcı (iPhone Safari): Compatibility renderer, ekran kartı adı yok; ölçüm düzeltir
+		return 1
 	if not OS.has_feature("mobile"):
 		return 2
 	var gpu := RenderingServer.get_video_adapter_name().to_lower()
@@ -861,9 +906,21 @@ func update_perf(dt: float) -> void:
 
 # --- Duraklatma ---
 
-func set_pause(on: bool) -> void:
+# quiet: online karşıya bildirmeden (arkadaştan geldi ya da geri sayım bitti).
+func set_pause(on: bool, quiet := false) -> void:
 	if on and state != "play":
 		return
+	if online and race_on and not quiet:
+		if ui.count_label.visible: # hazırlanırken ya da sayarken: geri tuşu eşitlemeyi atlatmasın
+			return
+		# online: duraklatma iki tarafta; devam 3 sn geri sayımla, dur-başlatla rakip geciktirilemesin
+		Net.send_pause(on)
+		if not on:
+			ui.start_countdown(3.0 + Net.ping_ms / 2000.0) # karşıya mesaj yarım ping'de varır
+			return
+		remote_paused = false
+	if on:
+		ui.stop_countdown() # sayım bitince gelen devamda değil: "BAŞLA!" görünsün
 	paused = on
 	holding = false # basılı kalan fren takılmasın
 	handbrake = false
@@ -994,7 +1051,9 @@ func update_run(step: float, dt: float) -> void:
 	if nitro_t > 0.0:
 		sparse *= 2.0 # nitroda trafik seyrelir: hız patlaması hemen çarpışmayla bitmesin
 	var hard := clampf(distance / 6000.0, 0.0, 1.0)
-	if Profile.mode != "free": # serbest sürüşte trafik yok
+	if online:
+		update_field()
+	if Profile.mode != "free" and not online: # serbest sürüşte trafik yok; online trafik alandan gelir
 		since_row += step
 		if since_row > lerpf(45.0, 24.0, hard) * sparse * (0.7 if Profile.road == "one" else 1.0): # tek yönde karşı trafik yok: önümüz biraz daha dolu
 			since_row = 0.0
@@ -1003,9 +1062,11 @@ func update_run(step: float, dt: float) -> void:
 		if since_on > lerpf(150.0, 70.0, hard) * sparse and Profile.road != "one":
 			since_on = 0.0
 			spawn_oncoming()
+	if Profile.mode != "free":
 		since_pick += step
 		if since_pick > next_pick:
 			since_pick = 0.0
+			ev_seed("nitro taşı")
 			next_pick = randf_range(180.0, 420.0)
 			spawn_pickups()
 	if Profile.mode == "time":
@@ -1025,7 +1086,7 @@ func update_run(step: float, dt: float) -> void:
 	update_race(dt)
 	if nitro_t <= 0.0:
 		nitro = minf(nitro + dt * 0.015, 1.0)
-	if nitro >= 0.5 and not Profile.nitro_tip and not tip_on:
+	if nitro >= 0.5 and not Profile.nitro_tip and not tip_on and not online: # online: ağır çekim süre kaybettirir
 		open_tip()
 	if tip_on and Time.get_ticks_msec() / 1000.0 > tip_until:
 		close_tip()
@@ -1048,6 +1109,7 @@ func update_tunnel(step: float, dt: float) -> void:
 		tunnel_on = true
 		tunnel.position.z = -330.0 # kamera far'ının ve sisin ötesinde belirir
 		tunnel.visible = true
+		ev_seed("tünel")
 		tunnel_sign.text = TUNNEL_NAMES.pick_random()
 	tunnel_t0 = 1e9
 	tunnel_t1 = 1e9
@@ -1058,6 +1120,7 @@ func update_tunnel(step: float, dt: float) -> void:
 		if tunnel_t1 > 30.0:
 			tunnel_on = false
 			tunnel.visible = false
+			ev_seed("tünel")
 			next_tunnel = travel + randf_range(1500.0, 3000.0)
 	var inside := tunnel_t0 > cam.position.z and tunnel_t1 < cam.position.z
 	tunnel_in = move_toward(tunnel_in, 1.0 if inside else 0.0, dt * 1.5)
@@ -1114,6 +1177,8 @@ func update_traffic(step: float, dt: float) -> void:
 				and c.get_meta("lane") == wall_right(c.position.z, 5.0):
 			v *= 0.8
 		c.position.z += step - dir * v / 3.6 * dt
+		if c.has_meta("fid") and not c.get_meta("ghost", false):
+			field_place(c) # online: yeri yarış saatinden, iki cihazda aynı
 		var dr: float = c.get_meta("drift", 0.0)
 		if dr > 0.0:
 			var t: float = c.get_meta("drift_t") + dt
@@ -1146,13 +1211,18 @@ func update_traffic(step: float, dt: float) -> void:
 			c.visible = false
 			c.set_meta("ghost", false)
 			traffic.erase(c)
+			if c.has_meta("fid"): # kaybolan zaten bitti sayıldı; geride kalan yetişirse yeniden çizilir
+				field_on.erase(c.get_meta("fid"))
+				c.remove_meta("fid")
 			if c == patrol:
 				patrol_active = false
 			else:
 				(pool if dir > 0 else pool_on).append(c)
 		elif state == "play" and not c.get_meta("ghost", false):
 			if touching(c) and race_blink <= 0.0:
-				if dir > 0 and before > 0.6 * len_gap(c):
+				if dir > 0 and before > 0.6 * len_gap(c) and c.has_meta("fid"):
+					ghost_car(c) # alan aracı yerinden oynatılamaz: arkadan yetişince içimizden geçip kaybolur
+				elif dir > 0 and before > 0.6 * len_gap(c):
 					c.position.z = car.position.z + len_gap(c) # arkadaki araç bindirmez, hak gitmez
 				else:
 					hit(c, kmh - dir * LANE_KMH[c.get_meta("lane")], before)
@@ -1198,6 +1268,7 @@ func hit(c: Node3D, closing_kmh: float, before: float) -> void:
 	c.set_meta("ghost", true)
 	c.set_meta("fade", 0.0)
 	c.set_meta("push", signf(c.position.x - car.position.x) * 3.0) # değdiğimiz yönün tersine savrulur
+	net_ghost(c)
 	kmh *= 0.8
 	combo = 0
 	combo_t = 0.0
@@ -1212,7 +1283,7 @@ func fade_out(c: Node3D, dt: float) -> bool:
 	var t: float = c.get_meta("fade") + dt
 	c.set_meta("fade", t)
 	c.visible = fmod(t, 0.16) < 0.08
-	c.position.x += c.get_meta("push") * dt
+	c.position.x += c.get_meta("push", 0.0) * dt # push vermeyen çağıran olabilir (yol ayrımı)
 	return t > 0.9
 
 
@@ -1291,6 +1362,7 @@ func update_weather(dt: float) -> void:
 	weather_t -= dt
 	if weather_t <= 0.0:
 		var keys := WEATHERS.keys()
+		ev_seed("hava")
 		keys.erase(weather)
 		weather = keys.pick_random()
 		weather_t = randf_range(35.0, 70.0)
@@ -1599,6 +1671,8 @@ func update_camera(dt: float) -> void:
 	# kokpitte gövde gizli (pano ve silecekler arayüzde çizilir); yarışta kazadan sonra yanıp söner
 	if not benching:
 		car.get_child(0).visible = mode != 3 and (race_blink <= 0.0 or fmod(race_blink, 0.2) > 0.1)
+		if car.has_meta("under"): # alt neon ayrı düğüm: gövdeyle birlikte yanıp söner
+			(car.get_meta("under") as Node3D).visible = race_blink <= 0.0 or fmod(race_blink, 0.2) > 0.1
 	# silecek: her süpürüşte camdaki damlalar silinir, yağmur yeniden ıslatır
 	if mode == 3 and rain_level > 0.15:
 		var ph := fmod(alive / 1.3, 1.0)
@@ -1755,6 +1829,8 @@ var my_flash := 0.0
 
 
 func update_tailgate(ahead: Node3D, dt: float) -> void:
+	if online: # alan aracı şerit değiştiremez (iki cihazda aynı kalmalı)
+		return
 	if ahead != tail_car:
 		tail_car = ahead
 		tail_t = 0.0
@@ -1961,6 +2037,7 @@ func update_incident(dt: float) -> void:
 		incident.visible = false
 		(incident_police.get_meta("snd") as AudioStreamPlayer3D).stop()
 		ui.set_works_sign(-1.0)
+		ev_seed("kaza yeri")
 		next_incident = travel + randf_range(3000.0, 5500.0)
 
 
@@ -2023,6 +2100,7 @@ func update_fallen() -> void:
 		fallen_on = false
 		fallen.visible = false
 		ui.set_works_sign(-1.0)
+		ev_seed("ağaç")
 		next_fallen = travel + randf_range(2500.0, 4500.0)
 
 
@@ -2171,8 +2249,10 @@ func configure_works(l: int) -> void:
 
 func start_works() -> void:
 	works_on = true
+	ev_seed("yol çalışması")
 	var r := randf()
-	works_lane = 3 if r < 0.5 else (2 if r < 0.75 or Profile.road == "one" else CONTRA) # tek yönde karşıdan şerit verilmez
+	# tek yönde karşıdan şerit verilmez; online'da da: ortak trafik alanı karşı şeride geçemez
+	works_lane = 3 if r < 0.5 else (2 if r < 0.75 or Profile.road == "one" or online else CONTRA)
 	works_start = travel + WORK_WARN
 	works_warned = WORK_WARN
 	works_close = 0.0
@@ -2249,6 +2329,7 @@ func update_works(dt: float) -> void:
 		works.visible = false
 		set_road("works", Vector4(0, 0, -1e6, -1e6))
 		ui.set_works_sign(-1.0)
+		ev_seed("yol çalışması")
 		next_works = travel + randf_range(3000.0, 5000.0)
 
 
@@ -2439,6 +2520,7 @@ func update_radar() -> void:
 		radar_on = false
 		radar.visible = false
 		radar.set_meta("shot", false)
+		ev_seed("radar")
 		radar_at = travel + randf_range(1800.0, 3200.0)
 
 
@@ -2512,6 +2594,7 @@ func change_station() -> void:
 
 # Siren bizim yönde, bizim şeridimizde arkadan gelir; yol vermek oyuncunun işi.
 func spawn_siren() -> void:
+	ev_seed("siren")
 	siren = sirens.pick_random()
 	siren_red = siren.get_meta("red")
 	siren_blue = siren.get_meta("blue")
@@ -2534,18 +2617,31 @@ func spawn_siren() -> void:
 
 func start_race() -> void:
 	race_on = true
+	online = Net.racing
+	if online:
+		move_region(Net.region)
+		region = region_at(travel)
+		build_field()
+		if OS.is_debug_build():
+			print("[online] travel=%.1f bölge=%d alan=%d araç" % [travel, region, field.size()])
 	if rival == null:
-		var model: String = RIVAL_MODELS.filter(func(m): return m != Profile.car).pick_random()
-		rival = make_kenney(model)
-		var m: ShaderMaterial = kenney_mat.duplicate()
-		m.set_shader_parameter("use_paint", 1.0)
-		m.set_shader_parameter("paint_uv", PAINT_UV[model])
-		m.set_shader_parameter("paint", Color(0.85, 0.05, 0.08))
-		m.set_shader_parameter("finish", 1)
-		for mi in rival.get_child(0).find_children("*", "MeshInstance3D", true, false):
-			mi.material_override = m
+		var rc: String = Net.remote.car if online else "" # online: arkadaşın kendi aracı, boyası ve jantıyla
+		if Profile.CARS.any(func(c): return c.id == rc):
+			var keep := player_mat # make_player oyuncunun malzemesini kurar: bizimki kalsın
+			rival = make_player(rc, clampi(Net.remote.paint, 0, Profile.PAINTS.size() - 1), clampi(Net.remote.rim, 0, Profile.RIMS.size() - 1))
+			player_mat = keep
+		else:
+			var model: String = RIVAL_MODELS.filter(func(m): return m != Profile.car).pick_random()
+			rival = make_kenney(model)
+			var m: ShaderMaterial = kenney_mat.duplicate()
+			m.set_shader_parameter("use_paint", 1.0)
+			m.set_shader_parameter("paint_uv", PAINT_UV[model])
+			m.set_shader_parameter("paint", Color(0.85, 0.05, 0.08))
+			m.set_shader_parameter("finish", 1)
+			for mi in rival.get_child(0).find_children("*", "MeshInstance3D", true, false):
+				mi.material_override = m
 		var tag := Label3D.new()
-		tag.text = "RAKİP"
+		tag.text = "ARKADAŞIN" if online else "RAKİP"
 		tag.font_size = 64
 		tag.pixel_size = 0.01
 		tag.billboard = BaseMaterial3D.BILLBOARD_ENABLED
@@ -2556,6 +2652,11 @@ func start_race() -> void:
 	rival_dist = distance
 	rival_kmh = kmh
 	rival_lane = 3 if car.position.x < 3.5 else 2
+	if online: # iki taraf kendi dünyasında aynı yerde: anahtarı küçük olan sol, öbürü sağ şeritten başlar
+		var mine := 2 if Net.token < Net.peer_token else 3
+		car.position.x = LANES[mine]
+		target_x = LANES[mine]
+		rival_lane = 5 - mine
 	rival.position = Vector3(LANES[rival_lane], 0, car.position.z)
 	rival.visible = true
 	if finish == null:
@@ -2566,6 +2667,9 @@ func start_race() -> void:
 
 func update_race(dt: float) -> void:
 	if not race_on:
+		return
+	if online:
+		update_online(dt)
 		return
 	var gap := rival_dist - distance # + rakip önde
 	var target := top_now + 4.0
@@ -2655,15 +2759,254 @@ func update_race(dt: float) -> void:
 		shake = 0.25
 		buzz(120, 0.7)
 		play("crash", 1.3, -10.0)
-	if distance >= RACE_LEN or rival_dist >= RACE_LEN:
+	race_end()
+
+
+# Online yarış: rakip arkadaşın; konumu ağdan gelir (Net), son paketten beri geçen süre kadar ileri tahmin
+# edilir. Çarpışma yok: trafik iki cihazda birebir aynı değil, rakip hayalet gibi içinden geçer.
+func update_online(dt: float) -> void:
+	if not Net.connected or Net.remote.quit: # arkadaş çıktı ya da bağlantı koptu: yarış biter
+		if my_ft >= 0.0 or Net.remote.ft >= 0.0: # biri bitirmişti: sonuç bitiş sürelerinden
+			race_result(my_ft >= 0.0 and (Net.remote.ft < 0.0 or my_ft <= Net.remote.ft))
+			return
 		race_on = false
+		Net.racing = false
 		finish.visible = false
-		if distance >= rival_dist:
-			score += 1500
-			play("confirm")
-			crash(null, "YARIŞI KAZANDIN", false)
-		else:
-			crash(null, "YARIŞI KAYBETTİN", false)
+		crash(null, "ARKADAŞIN YARIŞTAN ÇIKTI" if Net.remote.quit else "BAĞLANTI KOPTU", false)
+		return
+	race_t += dt
+	race_blink = maxf(race_blink - dt, 0.0)
+	finish.position.z = car.position.z - (RACE_LEN - distance)
+	finish.visible = RACE_LEN - distance < 500.0
+	rival_kmh = Net.remote.v
+	# konum 20/sn gelir: arada kendi hızıyla ilerler, gelen bilgiye (paketin yaşı + yarım ping kadar ileri
+	# tahmin) yumuşakça çekilir. Doğrudan atanınca her pakette ileri geri sekiyordu.
+	var target: float = Net.remote.d + rival_kmh / 3.6 * minf(Net.state_age() + Net.ping_ms / 2000.0, 0.7)
+	rival_dist += rival_kmh / 3.6 * dt
+	rival_dist = target if absf(target - rival_dist) > 15.0 else lerpf(rival_dist, target, 1.0 - exp(-6.0 * dt))
+	rival.position.z = car.position.z - (rival_dist - distance)
+	steer(rival, Net.remote.x, dt, 8.0)
+	keep_on_road(rival)
+	rival.visible = not Net.remote.w or fmod(alive, 0.2) < 0.1 # kazadaki arkadaş yanıp söner
+	Net.send_state(distance, car.position.x, kmh, race_blink > 0.0)
+	# çarpışma: iki taraf da kendi aracına uygular, karşı kaçırırsa diye payını ona bildirir
+	rival_bump_t -= dt
+	if rival_bump_t <= 0.0 and race_blink <= 0.0 and not Net.remote.w \
+			and absf(rival.position.z - car.position.z) < len_gap(rival) and absf(rival.position.x - car.position.x) < side_gap(rival):
+		var dzr := rival.position.z - car.position.z # + arkadaş arkada
+		var kind := "front" if dzr > 0.6 * len_gap(rival) else ("rear" if dzr < -0.6 * len_gap(rival) else "side")
+		net_bump(kind)
+		Net.send_hit({"front": "rear", "rear": "front", "side": "side"}[kind])
+	if my_ft < 0.0 and distance >= RACE_LEN:
+		my_ft = race_t
+		Net.send_final(distance, car.position.x, kmh, my_ft)
+		ft_wait = minf(Net.ping_ms / 1000.0 + 0.3, 1.5)
+	if Net.remote.ft >= 0.0 and rival_ft < 0.0:
+		# hile: bitiş süresi, mesajın geldiği andan (gecikme payıyla) daha erken bildirilemez
+		rival_ft = maxf(Net.remote.ft, race_t - Net.ping_ms / 1000.0 - 1.0)
+	ft_wait -= dt
+	if rival_ft >= 0.0 and (my_ft < 0.0 or my_ft > rival_ft):
+		race_result(false)
+	elif my_ft >= 0.0 and (rival_ft >= 0.0 or ft_wait <= 0.0):
+		race_result(true)
+
+
+# Online çarpışmada bizim payımız. front: öndeydik, arkadan vuruldu; rear: biz bindirdik; side: sürtüştük.
+func net_bump(kind: String) -> void:
+	rival_bump_t = 0.6
+	match kind:
+		"front":
+			kmh *= 0.85
+			ui.popup("ARKADAŞIN ARKADAN VURDU!", Color(1.0, 0.4, 0.35))
+		"rear":
+			kmh *= 0.93
+			ui.popup("ARKADAŞINA BİNDİRDİN!", Color(1.0, 0.75, 0.3))
+		_:
+			var dx := car.position.x - rival.position.x # tam üst üsteyse yön anahtardan: ikisi zıt yöne itilir
+			target_x += (signf(dx) if absf(dx) > 0.05 else (1.0 if Net.token > Net.peer_token else -1.0)) * 0.9
+			kmh *= 0.95
+			ui.popup("SÜRTÜŞME!", Color(1.0, 0.75, 0.3))
+	shake = 0.25
+	buzz(120, 0.7)
+	play("crash", 1.3, -10.0)
+
+
+# Arkadaşın gördüğü çarpışma: biz görmediysek (gecikme) payımızı uygularız. Araçlar gerçekten yakın değilse
+# yok sayılır: mesajla uzaktan yavaşlatılamaz.
+func on_net_hit(kind: String) -> void:
+	if not (online and race_on) or rival_bump_t > 0.0 or race_blink > 0.0:
+		return
+	if absf(rival.position.z - car.position.z) < len_gap(rival) + 6.0 and absf(rival.position.x - car.position.x) < side_gap(rival) + 2.0:
+		net_bump(kind)
+
+
+# Arkadaş duraklattı: biz de dururuz; devam dedi: 3 sn geri sayım.
+func on_remote_pause(on: bool) -> void:
+	if not (online and race_on):
+		return
+	if on:
+		remote_paused = true
+		set_pause(true, true)
+	else:
+		ui.start_countdown(3.0)
+
+
+func race_end() -> void:
+	if distance >= RACE_LEN or rival_dist >= RACE_LEN:
+		race_result(distance >= rival_dist)
+
+
+func race_result(won: bool) -> void:
+	race_on = false
+	Net.racing = false # yeni online yarış başlatılabilir
+	finish.visible = false
+	if won:
+		score += 1500
+		play("confirm")
+		crash(null, "YARIŞI KAZANDIN", false)
+	else:
+		crash(null, "YARIŞI KAYBETTİN", false)
+
+
+# --- Online: ortak trafik ve tohumlu olaylar ---
+# Trafik her cihazda kendi oyuncusunun önünde rastgele doğsaydı arkadaşın boşluğa çarpar görünürdü. Online'da
+# trafik yarışın kimliğinden tohumlanan bir alan: her aracın şeridi ve yarış başındaki yeri belli, şeridin sabit
+# hızıyla gider (aynı şeritte birbirine yetişmez), yeri yarış saatinden hesaplanır. Oyuncuya tepki vermez.
+# Rastgele olaylar (yol çalışması, radar, siren, tünel, 3. şerit, ayrım, kaza yeri, devrik ağaç, nitro taşı,
+# hava) kapanmaz: her karardan önce global üreteç "yarış, olay, sıra" ile tohumlanır, iki cihazda aynı çıkar.
+# Aynı yönün şeritleri aynı hızda gider, araçlar birbirini geçmez: bütün şeritleri birden kapatacak araç
+# alan kurulurken atlanır, önümüze duvar örülmez.
+const FIELD_KMH := [75.0, 72.0] # [karşı yön, bizim yön]
+var field: Array = [] # [başlangıç yeri, şerit, yön, havuz no]
+var field_on := {} # alan sırası -> görüş alanındaki araç
+var field_done := {} # geçilen ya da çarpılıp kaybolan
+var ev_count := {}
+
+
+func ev_seed(tag: String) -> void:
+	if Net.racing or online:
+		ev_count[tag] = ev_count.get(tag, 0) + 1
+		seed(hash([Net.race_id, tag, ev_count[tag]]))
+		if OS.is_debug_build():
+			print("[olay] %s %d @%dm" % [tag, ev_count[tag], int(distance)])
+
+
+func build_field() -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = hash([Net.race_id, "trafik"])
+	field.clear()
+	var cand: Array = []
+	for l in ours():
+		var s := rng.randf_range(40.0, 90.0) # başlangıçta şeritlerimiz boş
+		while s < RACE_LEN + 400.0:
+			cand.append([s, l, 1, rng.randi_range(0, 27)])
+			s += rng.randf_range(0.8, 1.6) * lerpf(55.0, 40.0, clampf(s / RACE_LEN, 0.0, 1.0)) * (1.6 if Profile.road == "one" else 1.0)
+	add_field(cand, ours().size())
+	if Profile.road != "one":
+		cand = []
+		for l in ONCOMING:
+			var s := rng.randf_range(150.0, 400.0)
+			while s < RACE_LEN + 4500.0: # bize doğru gelir: yarış boyunca ulaşacakların hepsi
+				cand.append([s, l, -1, rng.randi_range(28, 37)])
+				s += rng.randf_range(180.0, 380.0)
+		add_field(cand, ONCOMING.size())
+
+
+# Yan yana dizilip o yönün bütün şeritlerini kapatacak araç atlanır (aynı hızda gittikleri için hep öyle kalırdı).
+func add_field(cand: Array, lanes: int) -> void:
+	cand.sort_custom(func(a, b): return a[0] < b[0])
+	var kept: Array = []
+	for c in cand:
+		var side := {}
+		for k in range(kept.size() - 1, -1, -1):
+			if c[0] - kept[k][0] > 12.0:
+				break
+			if kept[k][1] != c[1]:
+				side[kept[k][1]] = true
+		if side.size() < lanes - 1:
+			kept.append(c)
+	field.append_array(kept)
+
+
+func field_s(i: int) -> float:
+	var f: Array = field[i]
+	return f[0] + f[2] * FIELD_KMH[(f[2] + 1) / 2] / 3.6 * race_t
+
+
+# Görüş alanına giren alan aracı havuzdan çıkar (aynı numaralı model; doluysa sıradaki).
+func update_field() -> void:
+	for i in field.size():
+		if field_on.has(i) or field_done.has(i):
+			continue
+		var rel := field_s(i) - distance # + önümüzde
+		if rel > -12.0 and rel < -SPAWN_Z: # arkadan yetişen de (kazadan sonra yavaşken) 12 m'de belirir
+			var f: Array = field[i]
+			var p: Array[Node3D] = pool if f[2] > 0 else pool_on
+			if p.is_empty():
+				continue
+			var k := p.find_custom(func(x): return x.get_meta("pid", -1) == f[3])
+			var c: Node3D = p.pop_at(k) if k >= 0 else p.pop_back()
+			place(c, f[1], f[2])
+			c.set_meta("drift", 0.0)
+			c.set_meta("weave", false)
+			c.set_meta("hazard", false)
+			c.set_meta("fid", i)
+			field_place(c)
+			field_on[i] = c
+
+
+# Alan aracının yeri; kapalı şeride (yol çalışması, devrik ağaç, kaza yeri) 80 m kala boş komşu şeride geçer.
+# Boş komşu yoksa kaybolur. Hepsi alandan hesaplanır (görüş alanındaki araçlardan değil): iki cihazda aynı.
+func field_place(c: Node3D) -> void:
+	var i: int = c.get_meta("fid")
+	var f: Array = field[i]
+	var s := field_s(i)
+	c.position.z = car.position.z - (s - distance)
+	var l: int = f[1]
+	if f[2] > 0 and lane_closed(l, c.position.z - 80.0):
+		l = -1
+		for k in [f[1] - 1, f[1] + 1]:
+			if k in ours() and not lane_closed(k, c.position.z - 80.0) and not field_busy(k, s):
+				l = k
+				break
+		if l < 0:
+			ghost_car(c, false)
+			return
+	c.set_meta("lane", l)
+
+
+func field_busy(l: int, s: float) -> bool:
+	for g: Array in field:
+		if g[1] == l and g[2] > 0 and absf(g[0] + FIELD_KMH[1] / 3.6 * race_t - s) < 12.0:
+			return true
+	return false
+
+
+# tell: arkadaşa da bildir (yalnız bizde olan bir sebeple kayboluyorsa; ikisinde aynı hesaplanıyorsa gerekmez).
+func ghost_car(c: Node3D, tell := true) -> void:
+	c.set_meta("ghost", true)
+	c.set_meta("fade", 0.0)
+	c.set_meta("push", c.get_meta("push", 0.0))
+	if c.has_meta("fid"):
+		field_done[c.get_meta("fid")] = true
+		if tell:
+			net_ghost(c)
+
+
+func net_ghost(c: Node3D) -> void:
+	if online and c.has_meta("fid"):
+		field_done[c.get_meta("fid")] = true
+		Net.send_ghost(c.get_meta("fid"))
+
+
+# Arkadaşın çarpıp kaybettiği alan aracı bizde de kaybolur.
+func on_net_ghost(fid: int) -> void:
+	if not online or fid < 0 or fid >= field.size():
+		return
+	field_done[fid] = true
+	var c: Node3D = field_on.get(fid)
+	if c and not c.get_meta("ghost", false):
+		ghost_car(c, false)
 
 
 # Yarışta kaza: oyun bitmez, araç durur ve 2 sn yanıp sönerek (çarpışmadan) devam eder.
@@ -2675,6 +3018,8 @@ func race_wreck(c: Node3D) -> void:
 	if c:
 		c.set_meta("ghost", true)
 		c.set_meta("fade", 0.0)
+		c.set_meta("push", signf(c.position.x - car.position.x) * 3.0) # fade_out savurur: yoksa her karede hata
+		net_ghost(c)
 	kmh = 0.0
 	nitro_t = 0.0
 	shake = 0.5
@@ -2819,6 +3164,7 @@ func update_widen() -> void:
 	if state == "play" and travel > next_widen and travel > widen_b + 50.0:
 		# parçaların sınırı travel cinsinden 40k + 30'da (ilk dizilişten); 700 m ileride: en uzak parçanın da ötesi
 		var a := ceilf((travel + 700.0 - 30.0) / Regions.GAP) * Regions.GAP + 30.0
+		ev_seed("3. şerit")
 		var b := a + Regions.GAP * randi_range(8, 14)
 		var ok := region_at(a) != Regions.BRIDGE and region_at(b) != Regions.BRIDGE \
 			and region_at((a + b) * 0.5) != Regions.BRIDGE and not tunnel_on \
@@ -2915,8 +3261,7 @@ func take_fork() -> void:
 		Regions.set_widen(p, widen_mode(travel - p.position.z), widen_side)
 	for c in traffic:
 		if c.position.z > -60.0:
-			c.set_meta("ghost", true)
-			c.set_meta("fade", 0.0)
+			ghost_car(c)
 	score += 300
 	ui.popup("%s AYRILDIN · %s  +300" % ["SAĞA" if widen_side == 1 else "SOLA", Regions.NAMES[fork_dest]], Color(0.5, 1.0, 0.6))
 
@@ -3109,6 +3454,7 @@ func update_siren(dt: float) -> void:
 		siren.visible = false
 		(siren.get_meta("snd") as AudioStreamPlayer3D).stop()
 		siren = null
+		ev_seed("siren")
 		next_siren = travel + randf_range(800.0, 2000.0)
 
 
@@ -3257,6 +3603,7 @@ func build_player_extras(rear: float, id: String) -> void:
 		var under := Build.plane(car, Vector2(hw * 2.0 + 0.7, rear * 2.0 + 0.5), Vector3(0, 0.06, 0), gm)
 		under.layers = 2
 		under.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		car.set_meta("under", under)
 	(car.get_child(0) as Node3D).position.y = -[0.0, 0.05, 0.1][maxi(Profile.mod(id, "low"), 0)] # süspansiyon
 	if Profile.mod(id, "amber") == 1:
 		for s in [-1.0, 1.0]:

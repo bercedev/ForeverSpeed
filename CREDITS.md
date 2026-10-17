@@ -36,5 +36,13 @@ The third-party assets below keep their own licenses.
   (https://sketchfab.com/3d-models/fiat-doblo-mk1-2000-2021-11103d960278407b9e612907d26fc63c), `cars/doblo/`,
   spare wheel copied to the four wheel arches and untextured materials recoloured;
   "BMW M4csl" by Mpgs.studio3DModels
-  (https://sketchfab.com/3d-models/bmw-m4csl-b53782a00cc240a191d5d7d005af1423), `cars/m4/`, reduced from 980k to 45k triangles.
+  (https://sketchfab.com/3d-models/bmw-m4csl-b53782a00cc240a191d5d7d005af1423), `cars/m4/`, reduced from 980k to 45k triangles;
+  "( FREE ) Dodge Challenger SRT" by SDC PERFORMANCE™️ (@Lambo_SC04)
+  (https://sketchfab.com/3d-models/free-dodge-challenger-srt-38a1fd572beb433fa2d26d8c1070c8fa), `cars/challenger/`,
+  reduced from 114k to 40k triangles, body recoloured;
+  "Nissan GT" by hartwelkisaka
+  (https://sketchfab.com/3d-models/nissan-gt-6efe436ad3144dcf8a280daf2965c28d), `cars/gtr/`, front wheels straightened;
+  "Honda civic" by Aldios
+  (https://sketchfab.com/3d-models/honda-civic-ff844e296f214e709c0d0691d031c68b), `cars/civic/`,
+  reduced from 672k to 48k triangles, front wheels straightened.
 - App icon (`icon.png`): generated for this project with OpenAI image generation via Codex CLI.

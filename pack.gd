@@ -12,18 +12,18 @@ extends RefCounted
 const PATH := "res://cars/pack/car_pack.glb"
 # Tek araçlık modeller (cars/<ad>/<ad>.glb, CC BY; bkz. CREDITS.md). Blender'da hazırlandı: metre, üçgen sayısı
 # mobile göre azaltılmış, tekerlekler "wheel0..3", boyanan gövde "car_Body_*", lambalar "car_Optics_*".
-const SINGLES := ["e30", "doblo", "phoenix", "m4", "cop"]
+const SINGLES := ["e30", "doblo", "phoenix", "m4", "cop", "civic", "challenger", "gtr"]
 const SCALE := 1.0 # sahne kökü milimetreyi zaten 0.000889 ile çarpıyor: gerçek boyun yaklaşık %89u
 # ön ucu dosyada -y'de olanlar (çeviri sonrası 180° döndürülür)
-const FLIP := ["minivan", "offroad", "coupe", "e30"]
+const FLIP := ["minivan", "offroad", "coupe", "e30", "civic"]
 
 static var _cars := {} # ad -> {parts: [[mesh, xform, material]], half_w, half_l, top}
 
 
-# Trafikte dolaşabilenler: çok parçalı ağır modeller (Doblo, Phoenix, M4) ve polis yalnız oyuncu/polis olarak.
+# Trafikte dolaşabilenler: çok parçalı ağır tek araç modelleri ve polis yalnız oyuncu/polis olarak.
 static func names() -> Array:
 	_load()
-	return _cars.keys().filter(func(n): return not n in ["doblo", "phoenix", "m4", "cop"])
+	return _cars.keys().filter(func(n): return not n in SINGLES or n == "e30")
 
 
 static func info(name: String) -> Dictionary:

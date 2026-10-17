@@ -21,6 +21,7 @@ boot_splash/image="res://splash.png"
 
 MCPRuntimeProbe="*uid://bsg12huaf1u5i"
 Profile="*res://profile.gd"
+Net="*res://net.gd"
 
 [display]
 
